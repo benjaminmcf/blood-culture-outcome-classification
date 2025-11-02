@@ -1,0 +1,118 @@
+{
+  "probability_threshold": 0.3,
+  "tree": {
+    "type": "node",
+    "feature": "NEUT%(%)",
+    "threshold": 85.85000228881836,
+    "left": {
+      "type": "node",
+      "feature": "MONO#(10^9/L)",
+      "threshold": 0.2750000059604645,
+      "left": {
+        "type": "node",
+        "feature": "MONO%(%)",
+        "threshold": 2.450000047683716,
+        "left": {
+          "type": "leaf",
+          "counts": [
+            0.18853345077471192,
+            0.811466549225284
+          ],
+          "prob_pos": 0.8114665492252873,
+          "pred_class": 1,
+          "pred_thresh": 1
+        },
+        "right": {
+          "type": "leaf",
+          "counts": [
+            0.4972500675462207,
+            0.5027499324537767
+          ],
+          "prob_pos": 0.5027499324537781,
+          "pred_class": 1,
+          "pred_thresh": 1
+        }
+      },
+      "right": {
+        "type": "node",
+        "feature": "NLR",
+        "threshold": 5.838250160217285,
+        "left": {
+          "type": "leaf",
+          "counts": [
+            0.792576528759268,
+            0.2074234712407495
+          ],
+          "prob_pos": 0.20742347124074587,
+          "pred_class": 0,
+          "pred_thresh": 0
+        },
+        "right": {
+          "type": "leaf",
+          "counts": [
+            0.5665907537584309,
+            0.43340924624160176
+          ],
+          "prob_pos": 0.4334092462415876,
+          "pred_class": 0,
+          "pred_thresh": 1
+        }
+      }
+    },
+    "right": {
+      "type": "node",
+      "feature": "NEUT%(%)",
+      "threshold": 90.75,
+      "left": {
+        "type": "node",
+        "feature": "RDW-CV(%)",
+        "threshold": 12.25,
+        "left": {
+          "type": "leaf",
+          "counts": [
+            0.7469662921348313,
+            0.25303370786516866
+          ],
+          "prob_pos": 0.25303370786516866,
+          "pred_class": 0,
+          "pred_thresh": 0
+        },
+        "right": {
+          "type": "leaf",
+          "counts": [
+            0.34548842861025225,
+            0.6545115713897834
+          ],
+          "prob_pos": 0.65451157138976,
+          "pred_class": 1,
+          "pred_thresh": 1
+        }
+      },
+      "right": {
+        "type": "node",
+        "feature": "MONO%(%)",
+        "threshold": 1.6500000357627869,
+        "left": {
+          "type": "leaf",
+          "counts": [
+            0.11247521914634398,
+            0.8875247808536536
+          ],
+          "prob_pos": 0.8875247808536558,
+          "pred_class": 1,
+          "pred_thresh": 1
+        },
+        "right": {
+          "type": "leaf",
+          "counts": [
+            0.23846974362078371,
+            0.7615302563792233
+          ],
+          "prob_pos": 0.7615302563792179,
+          "pred_class": 1,
+          "pred_thresh": 1
+        }
+      }
+    }
+  }
+}

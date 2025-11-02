@@ -1,3 +1,12 @@
+# Dont commit datasets
+datasets/
+
+# local files in the local folder
+local/
+
+# Dont commit the models folder
+models/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

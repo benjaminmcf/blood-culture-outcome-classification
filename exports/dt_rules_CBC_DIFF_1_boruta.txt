@@ -1,0 +1,23 @@
+# probability_threshold=0.300000
+if NEUT%(%) <= 85.850002:
+  if MONO#(10^9/L) <= 0.275000:
+    if MONO%(%) <= 2.450000:
+      => leaf: pred_class=1 prob_pos=0.811 pred_thresh=1 counts=[0.18853345077471192, 0.811466549225284]
+    else:  # MONO%(%) > 2.450000
+      => leaf: pred_class=1 prob_pos=0.503 pred_thresh=1 counts=[0.4972500675462207, 0.5027499324537767]
+  else:  # MONO#(10^9/L) > 0.275000
+    if NLR <= 5.838250:
+      => leaf: pred_class=0 prob_pos=0.207 pred_thresh=0 counts=[0.792576528759268, 0.2074234712407495]
+    else:  # NLR > 5.838250
+      => leaf: pred_class=0 prob_pos=0.433 pred_thresh=1 counts=[0.5665907537584309, 0.43340924624160176]
+else:  # NEUT%(%) > 85.850002
+  if NEUT%(%) <= 90.750000:
+    if RDW-CV(%) <= 12.250000:
+      => leaf: pred_class=0 prob_pos=0.253 pred_thresh=0 counts=[0.7469662921348313, 0.25303370786516866]
+    else:  # RDW-CV(%) > 12.250000
+      => leaf: pred_class=1 prob_pos=0.655 pred_thresh=1 counts=[0.34548842861025225, 0.6545115713897834]
+  else:  # NEUT%(%) > 90.750000
+    if MONO%(%) <= 1.650000:
+      => leaf: pred_class=1 prob_pos=0.888 pred_thresh=1 counts=[0.11247521914634398, 0.8875247808536536]
+    else:  # MONO%(%) > 1.650000
+      => leaf: pred_class=1 prob_pos=0.762 pred_thresh=1 counts=[0.23846974362078371, 0.7615302563792233]
