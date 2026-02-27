@@ -7,14 +7,18 @@ feature selection, cross-validation, metric summarization, and basic I/O helpers
 
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
+import base64
+import io
 import json
 import logging
 import pickle
 
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 from boruta import BorutaPy
 from imblearn.metrics import specificity_score
+from sklearn.base import clone
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_selection import RFE
 from sklearn.linear_model import LogisticRegression
@@ -24,6 +28,8 @@ from sklearn.metrics import (
     precision_score,
     recall_score,
     roc_auc_score,
+    roc_curve,
+    auc,
 )
 from sklearn.model_selection import StratifiedKFold
 from sklearn.pipeline import Pipeline
@@ -38,26 +44,50 @@ from xgboost import XGBClassifier
 # --------------------------------------------------------------------------------------
 
 
+# Required keys that must be present in config.json
+_REQUIRED_CONFIG_KEYS = ("RANDOM_STATE", "RANDOM_STATE_BORUTA")
+
+
 def load_config(config_path: Path) -> Dict:
-    """Load configuration JSON with required keys."""
+    """Load configuration JSON with required keys.
+
+    Required keys: RANDOM_STATE, RANDOM_STATE_BORUTA
+    Optional keys: TARGET_COLUMN (default 'isPOS'), FEATURE_SPACES (dict)
+    """
     with config_path.open() as f:
         cfg = json.load(f)
-    missing = [k for k in ("RANDOM_STATE", "RANDOM_STATE_BORUTA") if k not in cfg]
+    missing = [k for k in _REQUIRED_CONFIG_KEYS if k not in cfg]
     if missing:
         raise KeyError(
             f"Missing required config keys in {config_path.name}: {', '.join(missing)}"
         )
+    # Apply defaults for optional keys
+    cfg.setdefault("TARGET_COLUMN", "isPOS")
+    cfg.setdefault("DATA_DIR", "datasets")
     return cfg
 
 
-def project_paths() -> Dict[str, Path]:
-    """Return important project paths relative to this file location."""
+def project_paths(cfg: Dict | None = None) -> Dict[str, Path]:
+    """Return important project paths relative to this file location.
+
+    Parameters
+    ----------
+    cfg:
+        Optional config dict (as returned by ``load_config``).  When provided,
+        the ``DATA_DIR`` key is used to resolve the datasets directory.
+        The value may be an absolute path or a path relative to the repo root.
+        Defaults to ``"datasets"`` when absent.
+    """
     here = Path(__file__).resolve()
     repo_root = here.parent.parent  # move out of python_scripts/
+    data_dir_raw = (cfg or {}).get("DATA_DIR", "datasets")
+    data_dir = Path(data_dir_raw)
+    if not data_dir.is_absolute():
+        data_dir = repo_root / data_dir
     return {
         "root": repo_root,
         "config": repo_root / "config.json",
-        "datasets": repo_root / "datasets",
+        "datasets": data_dir,
         "features": repo_root / "features",
         "models": repo_root / "models",
         "results": repo_root / "results",
@@ -77,75 +107,49 @@ def init_logging(level: int = logging.INFO) -> None:
 # --------------------------------------------------------------------------------------
 
 
-def get_feature_spaces() -> Dict[str, List[str]]:
-    """Define and return the available feature space configurations."""
-    feature_space_1 = [
-        "[NE-SSC(ch)]",
-        "[NE-SFL(ch)]",
-        "[NE-FSC(ch)]",
-        "[LY-X(ch)]",
-        "[LY-Y(ch)]",
-        "[LY-Z(ch)]",
-        "[MO-X(ch)]",
-        "[MO-Y(ch)]",
-        "[MO-Z(ch)]",
-        "[NE-WX]",
-        "[NE-WY]",
-        "[NE-WZ]",
-        "[LY-WX]",
-        "[LY-WY]",
-        "[LY-WZ]",
-        "[MO-WX]",
-        "[MO-WY]",
-        "[MO-WZ]",
-    ]
-
-    feature_space_2 = [
+# Default feature spaces (used when config.json does not define FEATURE_SPACES)
+_DEFAULT_FEATURE_SPACES: Dict[str, List[str]] = {
+    "CBC_DIFF": [
+        "WBC(10^9/L)", "RBC(10^12/L)", "HGB(g/L)", "MCV(fL)", "MCHC(g/L)",
+        "PLT(10^9/L)", "RDW-CV(%)",
+        "NEUT#(10^9/L)", "LYMPH#(10^9/L)", "MONO#(10^9/L)", "EO#(10^9/L)", "BASO#(10^9/L)",
+        "NEUT%(%)", "LYMPH%(%)", "MONO%(%)", "EO%(%)", "BASO%(%)",
+        "NLR", "MLR",
+    ],
+    "CBC_DIFF_CPD": [
+        "WBC(10^9/L)", "RBC(10^12/L)", "HGB(g/L)", "MCV(fL)", "MCHC(g/L)",
+        "PLT(10^9/L)", "RDW-CV(%)",
+        "NEUT#(10^9/L)", "LYMPH#(10^9/L)", "MONO#(10^9/L)", "EO#(10^9/L)", "BASO#(10^9/L)",
+        "NEUT%(%)", "LYMPH%(%)", "MONO%(%)", "EO%(%)", "BASO%(%)",
+        "NLR", "MLR",
+        "[NE-SSC(ch)]", "[NE-SFL(ch)]", "[NE-FSC(ch)]",
+        "[LY-X(ch)]", "[LY-Y(ch)]", "[LY-Z(ch)]",
+        "[MO-X(ch)]", "[MO-Y(ch)]", "[MO-Z(ch)]",
+        "[NE-WX]", "[NE-WY]", "[NE-WZ]",
+        "[LY-WX]", "[LY-WY]", "[LY-WZ]",
+        "[MO-WX]", "[MO-WY]", "[MO-WZ]",
         "IP ABN(WBC)WBC Abn Scattergram",
-        "IP ABN(WBC)Neutropenia",
-        "IP ABN(WBC)Neutrophilia",
-        "IP ABN(WBC)Lymphopenia",
-        "IP ABN(WBC)Lymphocytosis",
-        "IP ABN(WBC)Leukocytopenia",
-        "IP ABN(WBC)Leukocytosis",
+        "IP ABN(WBC)Neutropenia", "IP ABN(WBC)Neutrophilia",
+        "IP ABN(WBC)Lymphopenia", "IP ABN(WBC)Lymphocytosis",
+        "IP ABN(WBC)Leukocytopenia", "IP ABN(WBC)Leukocytosis",
         "IP ABN(PLT)Thrombocytopenia",
-        "IP SUS(WBC)Blasts/Abn Lympho?",
-        "IP SUS(WBC)Blasts?",
-        "IP SUS(WBC)Abn Lympho?",
-        "IP SUS(WBC)Left Shift?",
+        "IP SUS(WBC)Blasts/Abn Lympho?", "IP SUS(WBC)Blasts?",
+        "IP SUS(WBC)Abn Lympho?", "IP SUS(WBC)Left Shift?",
         "IP SUS(WBC)Atypical Lympho?",
-    ]
+    ],
+}
 
-    feature_space_3 = [
-        "RDW-CV(%)",
-        "PLT(10^9/L)",
-        "MCHC(g/L)",
-        "MCV(fL)",
-        "HGB(g/L)",
-        "RBC(10^12/L)",
-        "WBC(10^9/L)",
-        "MONO%(%)",
-        "BASO%(%)",
-        "EO%(%)",
-        "LYMPH%(%)",
-        "NEUT%(%)",
-        "BASO#(10^9/L)",
-        "MONO#(10^9/L)",
-        "EO#(10^9/L)",
-        "LYMPH#(10^9/L)",
-        "NEUT#(10^9/L)",
-        "NLR",
-        "MLR",
-        # 'ELR','MCH(pg)'
-    ]
 
-    feature_space_cbc_diff = feature_space_3
-    feature_space_cbc_diff_cpd = feature_space_1 + feature_space_2 + feature_space_3
+def get_feature_spaces(cfg: Dict | None = None) -> Dict[str, List[str]]:
+    """Return feature space configurations.
 
-    return {
-        "CBC_DIFF": feature_space_cbc_diff,
-        "CBC_DIFF_CPD": feature_space_cbc_diff_cpd,
-    }
+    Reads from ``cfg["FEATURE_SPACES"]`` if present, otherwise uses built-in
+    defaults.  This allows users to define custom feature spaces in
+    ``config.json`` without modifying source code.
+    """
+    if cfg and "FEATURE_SPACES" in cfg:
+        return {k: list(v) for k, v in cfg["FEATURE_SPACES"].items()}
+    return {k: list(v) for k, v in _DEFAULT_FEATURE_SPACES.items()}
 
 
 # --------------------------------------------------------------------------------------
@@ -216,6 +220,14 @@ def select_features(
 ) -> Tuple[pd.DataFrame, List[str]]:
     """Select features using the requested method and return reduced X and names.
 
+    WARNING: Data Leakage
+    ---------------------
+    If this function is called on the entire dataset *before* cross-validation, the resulting
+    performance metrics will be optimistically biased. The model "sees" the test data during
+    feature selection. For rigorous performance estimation, feature selection should be
+    performed inside the CV loop (Nested CV). This pipeline currently uses the "global"
+    approach to prioritize final model performance over unbiased estimation.
+
     method: 'boruta' | 'rfe' | 'all'
     """
     method = method.lower()
@@ -265,15 +277,43 @@ def select_features(
 # --------------------------------------------------------------------------------------
 
 
-def cross_validate(
+def get_robust_n_splits(y: pd.Series, n_splits_target: int = 10) -> int:
+    """Calculate a robust n_splits for StratifiedKFold based on class counts.
+
+    Ensures n_splits does not exceed the number of samples in the smallest class.
+    """
+    min_class_samples = y.value_counts().min()
+    n_splits = max(2, min(n_splits_target, min_class_samples))
+    
+    if n_splits < n_splits_target:
+        logging.warning(
+            "Small dataset detected (%d samples in smallest class). "
+            "Reduced n_splits from %d to %d to satisfy StratifiedKFold constraints.",
+            min_class_samples, n_splits_target, n_splits
+        )
+    return n_splits
+
+
+def nested_cross_validate(
     estimator,
-    X: pd.DataFrame,
+    X_all: pd.DataFrame,
     y: pd.Series,
     *,
     n_splits: int,
     random_state: int | None = None,
-) -> Dict[str, np.ndarray]:
-    """Run StratifiedKFold CV and return arrays of metrics per fold."""
+    # Feature selection params
+    fs_method: str = "all",
+    model_key: str = "",
+    fs_random_state: int = 42,
+    class_weights: Dict[int, float] = None,
+    feature_names: List[str] = None,
+) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]:
+    """Run StratifiedKFold CV with Feature Selection INSIDE the loop (Nested CV).
+
+    Returns:
+    1. metrics: Dict of score arrays (one per fold).
+    2. aggregate_data: Dict containing consolidated 'y_true', 'y_proba', 'y_pred' for plotting.
+    """
     recall_scores: List[float] = []
     precision_scores: List[float] = []
     roc_auc_scores: List[float] = []
@@ -281,40 +321,74 @@ def cross_validate(
     specificity_scores: List[float] = []
     j_stat_scores: List[float] = []
     f2_scores: List[float] = []
+    
+    # Store aggregated predictions for global plotting
+    y_true_all = []
+    y_proba_all = []
+    y_pred_all = []
 
     skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    
+    fold_idx = 1
+    for train_index, test_index in skf.split(X_all.values, y.values):
+        X_train, X_test = X_all.iloc[train_index], X_all.iloc[test_index]
+        y_train, y_test = y.iloc[train_index], y.iloc[test_index]
+        
+        # 1. Feature Selection on TRAIN fold only
+        # We pass a fresh clone of estimator if needed, but select_features handles internal logic
+        # It needs the base estimator for Boruta/RFE
+        X_train_sel, selected_features = select_features(
+            method=fs_method,
+            model_key=model_key,
+            estimator=clone(estimator), # Clone to avoid fitting artifacts
+            X_all=X_train,
+            y=y_train,
+            random_state_boruta=fs_random_state,
+            class_weights=class_weights,
+            feature_names=feature_names,
+        )
+        
+        # Apply selection to test
+        X_test_sel = X_test[selected_features].copy()
+        
+        logging.debug("Fold %d: Selected %d features", fold_idx, len(selected_features))
 
-    for train_index, test_index in skf.split(X.values, y.values):
-        X_train, X_test = X.values[train_index], X.values[test_index]
-        y_train, y_test = y.values[train_index], y.values[test_index]
+        # 2. Train Model
+        est_fold = clone(estimator)
+        est_fold.fit(X_train_sel.values, y_train.values)
+        
+        # 3. Predict on Test
+        y_hat = est_fold.predict(X_test_sel.values)
+        try:
+            proba = est_fold.predict_proba(X_test_sel.values)[:, 1]
+            auc_score = roc_auc_score(y_test, proba)
+        except Exception:
+            proba = np.zeros_like(y_hat, dtype=float)
+            auc_score = np.nan
 
-        estimator.fit(X_train, y_train)
-        y_hat = estimator.predict(X_test)
-
-        # Metrics with guards
+        # 4. Metrics
         rec = recall_score(y_test, y_hat, zero_division=0)
         prec = precision_score(y_test, y_hat, zero_division=0)
-        try:
-            proba = estimator.predict_proba(X_test)[:, 1]
-            auc = roc_auc_score(y_test, proba)
-        except Exception:
-            # Fallback if estimator doesn't support predict_proba
-            auc = np.nan
-
         bac = balanced_accuracy_score(y_test, y_hat)
         spec = float(specificity_score(y_test, y_hat))
         j_stat = rec + spec - 1
-        # F2 score = (1+2^2)PR / (2^2 P + R) = 5PR / (4P + R)
         denom = (4 * prec + rec)
         f2 = (5 * prec * rec) / denom if denom > 0 else 0.0
 
         recall_scores.append(rec)
         precision_scores.append(prec)
-        roc_auc_scores.append(auc)
+        roc_auc_scores.append(auc_score)
         balanced_accuracy_scores.append(bac)
         specificity_scores.append(spec)
         j_stat_scores.append(j_stat)
         f2_scores.append(f2)
+        
+        # Aggregate for global plots
+        y_true_all.extend(y_test)
+        y_proba_all.extend(proba)
+        y_pred_all.extend(y_hat)
+        
+        fold_idx += 1
 
     # Likelihood ratios with divide-by-zero handling
     recall_arr = np.array(recall_scores)
@@ -323,7 +397,7 @@ def cross_validate(
         lr_plus = recall_arr / (1 - spec_arr)
         lr_minus = (1 - recall_arr) / spec_arr
 
-    return {
+    metrics = {
         "recall": np.array(recall_scores),
         "precision": np.array(precision_scores),
         "roc_auc": np.array(roc_auc_scores),
@@ -334,6 +408,14 @@ def cross_validate(
         "lr_plus": lr_plus,
         "lr_minus": lr_minus,
     }
+    
+    agg_data = {
+        "y_true": np.array(y_true_all),
+        "y_proba": np.array(y_proba_all),
+        "y_pred": np.array(y_pred_all),
+    }
+    
+    return metrics, agg_data
 
 
 def summarize_metrics(metrics: Dict[str, np.ndarray]) -> Dict[str, float]:
@@ -366,6 +448,52 @@ def summarize_metrics(metrics: Dict[str, np.ndarray]) -> Dict[str, float]:
     }
 
 
+def plot_roc_curve(y_true, y_proba, title="ROC Curve") -> str:
+    """Generate ROC curve plot and return base64 string."""
+    plt.figure(figsize=(6, 5))
+    fpr, tpr, _ = roc_curve(y_true, y_proba)
+    roc_auc = auc(fpr, tpr)
+    
+    plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (area = {roc_auc:.2f})')
+    plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title(title)
+    plt.legend(loc="lower right")
+    plt.grid(True, alpha=0.3)
+    
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', bbox_inches='tight')
+    plt.close()
+    return base64.b64encode(buf.getvalue()).decode('utf-8')
+
+
+def plot_confusion_matrix(y_true, y_pred, title="Confusion Matrix") -> str:
+    """Generate Confusion Matrix plot and return base64 string."""
+    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+    
+    fig, ax = plt.subplots(figsize=(5, 4))
+    cax = ax.matshow(cm, cmap=plt.cm.Blues, alpha=0.7)
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            ax.text(x=j, y=i, s=cm[i, j], va='center', ha='center', size='xx-large')
+    
+    plt.xlabel('Predicted')
+    plt.ylabel('Actual')
+    plt.title(title)
+    # Ticks might behave oddly with matshow, fix them
+    ax.xaxis.set_ticks_position('bottom')
+    plt.xticks([0, 1], ['Neg', 'Pos'])
+    plt.yticks([0, 1], ['Neg', 'Pos'])
+    
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', bbox_inches='tight')
+    plt.close()
+    return base64.b64encode(buf.getvalue()).decode('utf-8')
+
+
 # --------------------------------------------------------------------------------------
 # I/O helpers
 # --------------------------------------------------------------------------------------
@@ -390,6 +518,31 @@ def save_model(path: Path, model) -> None:
 # --------------------------------------------------------------------------------------
 # Inference utilities
 # --------------------------------------------------------------------------------------
+
+
+def save_model_metadata(
+    path: Path,
+    *,
+    model_key: str,
+    feature_space: str,
+    weight: float,
+    fsm: str,
+    features: List[str],
+    threshold: float = 0.3,
+    **kwargs
+) -> None:
+    """Save metadata about a trained model config to a JSON file."""
+    meta = {
+        "model_key": model_key,
+        "feature_space": feature_space,
+        "weight": float(weight),
+        "fsm": fsm,
+        "features": features,
+        "threshold": float(threshold),
+        **kwargs
+    }
+    path.write_text(json.dumps(meta, indent=2))
+
 
 
 def load_model(path: Path):

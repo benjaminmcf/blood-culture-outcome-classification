@@ -1,9 +1,32 @@
 [project]
 name = "blood-culture-outcome-classification"
-version = "0.1.0"
-description = ""
+version = "1.0.0"
+description = "An open-source machine learning pipeline for predicting blood culture outcomes from routine haematology parameters"
 readme = "README.md"
 requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "Benjamin McFadden", email = "benjamin.mcfadden@example.com"},
+]
+keywords = [
+    "blood-culture",
+    "machine-learning",
+    "haematology",
+    "bacteraemia",
+    "clinical-decision-support",
+    "sepsis",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Healthcare Industry",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "boruta>=0.4.3",
     "imbalanced-learn>=0.14.0",
@@ -14,3 +37,22 @@ dependencies = [
     "scikit-learn>=1.7.2",
     "xgboost>=3.0.5",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/benjaminmcf/blood-culture-outcome-classification"
+Documentation = "https://github.com/benjaminmcf/blood-culture-outcome-classification#readme"
+Repository = "https://github.com/benjaminmcf/blood-culture-outcome-classification.git"
+Issues = "https://github.com/benjaminmcf/blood-culture-outcome-classification/issues"
+
+[project.scripts]
+bcoc-train = "python_scripts.training:main"
+bcoc-infer = "python_scripts.inference:main"
+
+[tool.setuptools]
+packages = ["python_scripts"]
