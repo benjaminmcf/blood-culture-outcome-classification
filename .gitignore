@@ -1,11 +1,8 @@
-# Dont commit datasets
-datasets/
-
 # local files in the local folder
 local/
 
-# Dont commit the models folder
-models/
+# Paper drafts (not for version control)
+paper/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -214,3 +211,15 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Pipeline Outputs
+datasets/
+datasets_local/
+features/
+models/
+results/
+predictions/
+exports/
+
+# macOS files
+.DS_Store
