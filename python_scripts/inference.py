@@ -40,6 +40,7 @@ from .training_utils import (
     predict_lr_with_raw_params,
     export_lr_coefficients_csv,
     extract_decision_tree_rules,
+    mark_dt_threshold_predictions,
     render_decision_rules_text,
     predict_with_dt_rules,
     export_confusion_matrix_csv,
@@ -100,10 +101,45 @@ def ensure_dirs(paths: List[Path]):
         p.mkdir(parents=True, exist_ok=True)
 
 
+def resolve_inference_threshold(
+    meta: dict,
+    *,
+    threshold: float,
+    use_youdens: bool,
+    model_name: str,
+) -> Tuple[float, str, str, dict]:
+    """Resolve the threshold to apply during inference.
+
+    Fixed mode uses the CLI threshold. Youden mode uses only the threshold
+    saved during training from cross-validated predictions.
+    """
+    if not use_youdens:
+        return float(threshold), "fixed", "cli", {}
+
+    if "youden_threshold" not in meta:
+        raise ValueError(
+            f"Model metadata for {model_name} does not contain a saved Youden "
+            "threshold. Re-run training with the current code before using --youdens."
+        )
+
+    threshold_info = {}
+    for key in ("youden_j", "youden_sensitivity", "youden_specificity"):
+        if key in meta:
+            threshold_info[f"training_cv_{key}"] = float(meta[key])
+
+    return (
+        float(meta["youden_threshold"]),
+        "youden",
+        str(meta.get("youden_threshold_source", "training_cv")),
+        threshold_info,
+    )
+
+
 def run_inference(
     df: pd.DataFrame,
     *,
     threshold: float = DEFAULT_THRESHOLD,
+    use_youdens: bool = False,
     validate: bool = False,
     input_name: str = "unknown",
 ) -> pd.DataFrame:
@@ -120,6 +156,7 @@ def run_inference(
     outputs: List[pd.DataFrame] = []
     metrics_rows: List[dict] = []
     plots_dict = {}
+    skipped_youden_models: List[str] = []
 
     target_col = cfg["TARGET_COLUMN"]
 
@@ -134,8 +171,24 @@ def run_inference(
         # Use weight formatted to 2 decimals for consistency in naming if needed, or just use what's in meta
         # The key for output filenames:
         model_name = f"{model_key}_{feature_space}_{weight}_{fsm}"
+
+        if use_youdens and "youden_threshold" not in meta:
+            skipped_youden_models.append(model_name)
+            logging.warning(
+                "Skipping %s because its metadata does not contain a saved "
+                "Youden threshold. Re-run training for this model to enable --youdens.",
+                model_name,
+            )
+            continue
         
         logging.info("Running inference for %s", model_name)
+        pipeline = None
+        dt_model = None
+        tree_dict = None
+        rules_txt = None
+        rules_json = None
+        saved_dt_rules_threshold = None
+        should_export_dt_rules = False
         
         # No need to load features from txt, we have them in metadata
         features_and_target = features + [target_col]
@@ -175,7 +228,7 @@ def run_inference(
                      # fall through to extraction
                      pipeline = load_model(model_path)
                      params = extract_lr_raw_params_from_pipeline(pipeline, features)
-                     probs, preds = predict_lr_with_raw_params(
+                     probs, _ = predict_lr_with_raw_params(
                          X,
                          feature_order=params["features"],
                          weights_raw=params["weights_raw"],
@@ -185,20 +238,18 @@ def run_inference(
                      export_lr_coefficients_csv(
                          coeffs_csv, params["features"], params["weights_raw"], params["intercept_raw"]
                      )
-                     pipeline = None # Reset
                 else: 
-                     probs, preds = predict_lr_with_raw_params(
+                     probs, _ = predict_lr_with_raw_params(
                         X,
                         feature_order=feats_order,
                         weights_raw=weights_raw,
                         intercept_raw=intercept_raw,
                         threshold=threshold,
                     )
-                     pipeline = None
             else:
                 pipeline = load_model(model_path)
                 params = extract_lr_raw_params_from_pipeline(pipeline, features)
-                probs, preds = predict_lr_with_raw_params(
+                probs, _ = predict_lr_with_raw_params(
                     X,
                     feature_order=params["features"],
                     weights_raw=params["weights_raw"],
@@ -210,50 +261,18 @@ def run_inference(
                     coeffs_csv, params["features"], params["weights_raw"], params["intercept_raw"]
                 )
 
-            # Optional validation: if a pipeline was loaded, compare against it
-            if validate and 'pipeline' in locals() and pipeline is not None:
-                proba_b, preds_b = predict_with_lr_pipeline(pipeline, X, threshold=threshold)
-                report = compare_predictions(probs, preds, proba_b, preds_b)
-                (exports_dir / "validation").mkdir(parents=True, exist_ok=True)
-                (exports_dir / "validation" / f"validate_lr_{feature_space}_{weight}_{fsm}.json").write_text(
-                    json.dumps(report, indent=2)
-                )
-
         elif model_key == "dt":
             # Prefer existing exported rules; fallback to model extraction
             rules_txt = exports_dir / f"dt_rules_{feature_space}_{weight}_{fsm}.txt"
             rules_json = exports_dir / f"dt_rules_{feature_space}_{weight}_{fsm}.json"
             if rules_json.exists():
-                tree_dict, saved_thr = load_dt_rules_json(rules_json)
-                # Re-annotate with current threshold if different
-                from .training_utils import mark_dt_threshold_predictions
-                tree_dict = mark_dt_threshold_predictions(tree_dict, threshold)
-                dt_model = None
+                tree_dict, saved_dt_rules_threshold = load_dt_rules_json(rules_json)
             else:
                 dt_model = load_model(model_path)
                 tree_dict = extract_decision_tree_rules(dt_model, features)
-                # Annotate leaves with threshold-based predictions
-                from .training_utils import mark_dt_threshold_predictions
-                tree_dict = mark_dt_threshold_predictions(tree_dict, threshold)
-                # Save text (prepend threshold info) and JSON
-                lines = render_decision_rules_text(tree_dict)
-                header = [f"# probability_threshold={threshold:.6f}"]
-                rules_txt.write_text(essential_newline.join(header + lines) + essential_newline)
-                export_obj = {"probability_threshold": float(threshold), "tree": tree_dict}
-                rules_json.write_text(json.dumps(export_obj, indent=2))
+                should_export_dt_rules = True
 
             probs, preds_leaf = predict_with_dt_rules(X, features, tree_dict)
-            # Apply probability threshold to DT probabilities
-            preds = (probs >= threshold).astype(int)
-
-            # Optional validation: compare against DT model predictions if model loaded
-            if validate and 'dt_model' in locals() and dt_model is not None:
-                proba_b, preds_b = predict_with_dt_model(dt_model, X, threshold=threshold)
-                report = compare_predictions(probs, preds, proba_b, preds_b)
-                (exports_dir / "validation").mkdir(parents=True, exist_ok=True)
-                (exports_dir / "validation" / f"validate_dt_{feature_space}_{weight}_{fsm}.json").write_text(
-                    json.dumps(report, indent=2)
-                )
 
         else:
             # RF, XG: use model directly
@@ -268,11 +287,64 @@ def run_inference(
                 else:
                     preds = model.predict(X.values)
                     probs = preds.astype(float)
-            preds = (probs >= threshold).astype(int)
+
+        effective_threshold, threshold_method, threshold_source, threshold_info = (
+            resolve_inference_threshold(
+                meta,
+                threshold=threshold,
+                use_youdens=use_youdens,
+                model_name=model_name,
+            )
+        )
+        if use_youdens:
+            logging.info(
+                "Using saved Youden threshold %.6f for %s from %s",
+                effective_threshold,
+                model_name,
+                threshold_source,
+            )
+
+        preds = (probs >= effective_threshold).astype(int)
+
+        if model_key == "dt" and tree_dict is not None:
+            tree_dict = mark_dt_threshold_predictions(tree_dict, effective_threshold)
+            threshold_changed = (
+                saved_dt_rules_threshold is None
+                or abs(float(saved_dt_rules_threshold) - effective_threshold) > 1e-12
+            )
+            if (
+                (should_export_dt_rules or threshold_changed)
+                and rules_txt is not None
+                and rules_json is not None
+            ):
+                lines = render_decision_rules_text(tree_dict)
+                header = [f"# probability_threshold={effective_threshold:.6f}"]
+                rules_txt.write_text(essential_newline.join(header + lines) + essential_newline)
+                export_obj = {"probability_threshold": effective_threshold, "tree": tree_dict}
+                rules_json.write_text(json.dumps(export_obj, indent=2))
+
+        # Optional validation: compare extracted predictions against loaded model objects.
+        if validate and model_key == "lr" and pipeline is not None:
+            proba_b, preds_b = predict_with_lr_pipeline(pipeline, X, threshold=effective_threshold)
+            report = compare_predictions(probs, preds, proba_b, preds_b)
+            (exports_dir / "validation").mkdir(parents=True, exist_ok=True)
+            (exports_dir / "validation" / f"validate_lr_{feature_space}_{weight}_{fsm}.json").write_text(
+                json.dumps(report, indent=2)
+            )
+        if validate and model_key == "dt" and dt_model is not None:
+            proba_b, preds_b = predict_with_dt_model(dt_model, X, threshold=effective_threshold)
+            report = compare_predictions(probs, preds, proba_b, preds_b)
+            (exports_dir / "validation").mkdir(parents=True, exist_ok=True)
+            (exports_dir / "validation" / f"validate_dt_{feature_space}_{weight}_{fsm}.json").write_text(
+                json.dumps(report, indent=2)
+            )
 
         # Save predictions
         out_payload = {
             "model": model_name,
+            "threshold_method": threshold_method,
+            "threshold": effective_threshold,
+            "threshold_source": threshold_source,
             "prob_pos": probs,
             "yhat": preds,
         }
@@ -290,7 +362,13 @@ def run_inference(
             export_confusion_matrix_csv(cm_path, y_true.values.astype(int), preds.astype(int))
             # Metrics summary per model
             perf = compute_performance_metrics(y_true.values.astype(int), preds.astype(int), probs)
-            perf_row = {"model": model_name, "threshold": float(threshold)}
+            perf_row = {
+                "model": model_name,
+                "threshold_method": threshold_method,
+                "threshold": effective_threshold,
+                "threshold_source": threshold_source,
+            }
+            perf_row.update(threshold_info)
             perf_row.update(perf)
             metrics_rows.append(perf_row)
             
@@ -298,6 +376,13 @@ def run_inference(
             roc_b64 = plot_roc_curve(y_true.values.astype(int), probs, title=f"ROC: {model_name}")
             cm_b64 = plot_confusion_matrix(y_true.values.astype(int), preds.astype(int), title=f"Confusion Matrix: {model_name}")
             plots_dict[model_name] = {"roc": roc_b64, "cm": cm_b64}
+
+    if use_youdens and not outputs and skipped_youden_models:
+        raise ValueError(
+            "No predictions were generated with --youdens because none of the "
+            "discovered model metadata files contain a saved Youden threshold. "
+            "Re-run training with the current code first."
+        )
             
     # Write aggregated metrics if available
     validation_results = {}
@@ -322,13 +407,6 @@ def run_inference(
                      pass
 
     # Generate HTML Report
-    # We need simple summary stats for the report
-    unique_models = sorted(list({o["model"][0] for o in outputs})) if outputs else []
-    
-    # Collect plots from the loop? 
-    # I need to restructure slightly to capture plots.
-    # Let's assume plots_dict was populated in the loop.
-    
     predictions_summary = []
     
     # Summarize per model output
@@ -338,6 +416,9 @@ def run_inference(
         n_pos_pred = int(out_df["yhat"].sum())
         predictions_summary.append({
             "model": m_name,
+            "threshold_method": out_df["threshold_method"].iloc[0],
+            "threshold": round(float(out_df["threshold"].iloc[0]), 6),
+            "threshold_source": out_df["threshold_source"].iloc[0],
             "n_predictions": n_preds,
             "n_positive_pred": n_pos_pred,
             "pct_positive": round((n_pos_pred / n_preds * 100), 1) if n_preds else 0
@@ -366,6 +447,14 @@ def run_inference(
 def main():
     parser = argparse.ArgumentParser(description="Inference for blood culture outcome models")
     parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD, help="Probability threshold for binary predictions (default: 0.3)")
+    parser.add_argument(
+        "--youdens",
+        action="store_true",
+        help=(
+            "Use the per-model Youden threshold saved during training from "
+            "cross-validated predictions. Overrides --threshold."
+        ),
+    )
     parser.add_argument("--validate", action="store_true", help="Validate LR/DT extracted predictions against model objects and write a JSON report")
     parser.add_argument("--input", type=Path, help="Path to input CSV. Defaults to testing_data.csv if present, else training_data.csv")
     args = parser.parse_args()
@@ -388,7 +477,13 @@ def main():
             df_all = load_data_filtering_comments(paths["datasets"] / "training_data.csv")
             logging.info("Using training data for inference: %s", paths["datasets"] / "training_data.csv")
 
-    preds = run_inference(df_all, threshold=args.threshold, validate=args.validate, input_name=args.input.name if args.input else "default/training")
+    preds = run_inference(
+        df_all,
+        threshold=args.threshold,
+        use_youdens=args.youdens,
+        validate=args.validate,
+        input_name=args.input.name if args.input else "default/training",
+    )
     logging.info("Inference complete. Rows: %d", len(preds))
 
 

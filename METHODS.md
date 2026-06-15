@@ -115,7 +115,7 @@ Blood culture datasets are typically imbalanced, with negative cultures substant
 
 1. **Balanced class weights:** Computed as `n_samples / (n_classes × n_samples_per_class)` and passed to all classifiers that support the `class_weight` parameter
 2. **`scale_pos_weight` for XGBoost:** Explicitly set to `n_negative / n_positive`
-3. **Probability thresholding:** The default threshold of 0.3 (rather than 0.5) compensates for the prior probability skew during inference
+3. **Probability thresholding:** The default threshold of 0.3 (rather than 0.5) compensates for the prior probability skew during inference. During training, the pipeline also selects a per-model Youden threshold from cross-validation out-of-fold probabilities and saves it with the model metadata; inference can then apply this frozen threshold without using test labels for threshold selection
 
 ## Feature Selection
 
@@ -240,7 +240,7 @@ Each trained model has an accompanying JSON metadata file (`models/*.json`) cont
 - Model type and configuration
 - Feature space and selection method
 - Selected feature list
-- Default probability threshold
+- Default probability threshold and saved cross-validation Youden threshold
 - Paths to model and feature list files
 
 ## Synthetic Data Generation

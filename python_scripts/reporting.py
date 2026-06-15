@@ -90,6 +90,7 @@ def generate_training_report(
         # Standard table
         display_cols = [
             "model",
+            "youden_threshold", "youden_j",
             "balanced_accuracy_mean", "balanced_accuracy_std",
             "recall_mean", "recall_std",
             "specificity_mean", "specificity_std",
@@ -155,7 +156,8 @@ def generate_inference_report(
         metrics_html = "<h2>Performance Metrics</h2>"
         metrics_df = pd.DataFrame(metrics)
         display_cols = [
-            "model", "balanced_accuracy", "recall", "specificity",
+            "model", "threshold_method", "threshold", "threshold_source",
+            "balanced_accuracy", "recall", "specificity",
             "roc_auc", "precision",
         ]
         display_cols = [c for c in display_cols if c in metrics_df.columns]

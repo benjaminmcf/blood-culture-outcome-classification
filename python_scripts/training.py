@@ -32,6 +32,7 @@ from .training_utils import (
     nested_cross_validate,
     plot_roc_curve,
     plot_confusion_matrix,
+    select_threshold_by_youdens_index,
 )
 from .reporting import generate_training_report
 
@@ -186,6 +187,9 @@ def main() -> None:
                         class_weights=class_weights,
                         feature_names=list(cols),
                     )
+                    youden_info = select_threshold_by_youdens_index(
+                        agg_data["y_true"], agg_data["y_proba"]
+                    )
 
                     # Generate Plots (from aggregated Nested CV predictions)
                     roc_b64 = plot_roc_curve(agg_data["y_true"], agg_data["y_proba"], title=f"ROC: {model_key} using {feature_space_name}")
@@ -201,6 +205,10 @@ def main() -> None:
                             "feature_space": feature_space_name,
                             "class_weight": weight,
                             "selection_method": fsm,
+                            "youden_threshold": youden_info["threshold"],
+                            "youden_j": youden_info["j_stat"],
+                            "youden_sensitivity": youden_info["sensitivity"],
+                            "youden_specificity": youden_info["specificity"],
                         }
                     )
                     results_rows.append(summary)
@@ -252,6 +260,11 @@ def main() -> None:
                         fsm=fsm,
                         features=list(final_selected_features),
                         threshold=0.3, 
+                        youden_threshold=youden_info["threshold"],
+                        youden_j=youden_info["j_stat"],
+                        youden_sensitivity=youden_info["sensitivity"],
+                        youden_specificity=youden_info["specificity"],
+                        youden_threshold_source="nested_cv_out_of_fold",
                         model_path=model_path.name,
                         feature_list_path=feature_list_path.name,
                     )

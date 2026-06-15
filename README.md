@@ -117,6 +117,9 @@ bcoc-infer --threshold 0.3
 # Run with validation of exported artifacts
 bcoc-infer --threshold 0.3 --validate
 
+# Use each model's saved training/CV Youden threshold
+bcoc-infer --youdens
+
 # Run on a specific input file
 bcoc-infer --input path/to/data.csv --threshold 0.3
 ```
@@ -136,8 +139,11 @@ uv run bcoc-infer --threshold 0.3
 | Flag | Description |
 |------|-------------|
 | `--threshold <float>` | Probability threshold for binary predictions (default: 0.3) |
+| `--youdens` | Use the per-model Youden threshold saved during training from cross-validated predictions. Overrides `--threshold` |
 | `--validate` | Validate LR/DT exported predictions against model objects |
 | `--input <path>` | Path to input CSV (default: `datasets/testing_data.csv`) |
+
+When `--youdens` is used, models whose metadata does not contain a saved `youden_threshold` are skipped with a warning. Re-run `bcoc-train` for those model artifacts to enable Youden-threshold inference.
 
 ## Pipeline Overview
 
@@ -146,13 +152,14 @@ uv run bcoc-infer --threshold 0.3
 1. Loads configuration from `config.json` and training data from `<DATA_DIR>/training_data.csv`
 2. Iterates over feature spaces (CBC_DIFF, CBC_DIFF_CPD), models, and feature selection methods
 3. Performs **nested cross-validation** with feature selection inside each fold
-4. Trains a final model on the full dataset with globally-selected features
-5. Saves artifacts and generates an HTML report
+4. Selects a per-model Youden threshold from the training cross-validation out-of-fold probabilities
+5. Trains a final model on the full dataset with globally-selected features
+6. Saves artifacts and generates an HTML report
 
 **Outputs:**
 - `features/` — Selected feature lists (one per model configuration)
-- `models/` — Trained model objects (`.sav`) and metadata (`.json`)
-- `results/results_cross_validation.csv` — Cross-validation metrics
+- `models/` — Trained model objects (`.sav`) and metadata (`.json`, including saved Youden thresholds)
+- `results/results_cross_validation.csv` — Cross-validation metrics and saved Youden threshold summaries
 - `results/training_report.html` — HTML report with metrics table, ROC curves, and confusion matrices
 
 ### Inference (`bcoc-infer`)
@@ -161,10 +168,11 @@ uv run bcoc-infer --threshold 0.3
 2. For LR: extracts raw-space coefficients and applies them directly
 3. For DT: extracts human-readable rules and applies them without the model object
 4. For RF/XG: uses saved model objects
-5. If ground truth is available, computes performance metrics and generates plots
+5. Applies either the fixed probability threshold or the saved training/CV Youden threshold
+6. If ground truth is available, computes performance metrics and generates plots
 
 **Outputs:**
-- `predictions/preds_*.csv` — Per-model predictions (`model`, `prob_pos`, `yhat`)
+- `predictions/preds_*.csv` — Per-model predictions (`model`, `threshold_method`, `threshold`, `threshold_source`, `prob_pos`, `yhat`)
 - `predictions/cm_*.csv` — Confusion matrices (when ground truth available)
 - `predictions/metrics_summary.csv` — Performance metrics per model
 - `predictions/inference_report.html` — HTML report with metrics and visualizations

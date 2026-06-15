@@ -494,6 +494,54 @@ def plot_confusion_matrix(y_true, y_pred, title="Confusion Matrix") -> str:
     return base64.b64encode(buf.getvalue()).decode('utf-8')
 
 
+def select_threshold_by_youdens_index(
+    y_true: np.ndarray | pd.Series,
+    y_proba: np.ndarray | pd.Series,
+) -> Dict[str, float]:
+    """Select the probability threshold that maximizes Youden's J statistic.
+
+    Youden's J is sensitivity + specificity - 1, equivalent to TPR - FPR on
+    the ROC curve. Ground-truth labels must contain both binary classes.
+    """
+    y_true_arr = np.asarray(y_true, dtype=int)
+    y_proba_arr = np.asarray(y_proba, dtype=float)
+
+    if y_true_arr.shape[0] != y_proba_arr.shape[0]:
+        raise ValueError(
+            "y_true and y_proba must contain the same number of observations"
+        )
+    if y_true_arr.size == 0:
+        raise ValueError("Cannot select a threshold from an empty dataset")
+    if not np.isfinite(y_proba_arr).all():
+        raise ValueError("Cannot select a threshold when probabilities contain non-finite values")
+
+    classes = np.unique(y_true_arr)
+    if not np.array_equal(classes, np.array([0, 1])):
+        raise ValueError(
+            "Youden threshold selection requires ground truth with both binary classes 0 and 1"
+        )
+
+    fpr, tpr, thresholds = roc_curve(y_true_arr, y_proba_arr)
+    j_scores = tpr - fpr
+
+    finite_thresholds = np.isfinite(thresholds)
+    if not finite_thresholds.any():
+        raise ValueError("Could not compute a finite Youden threshold")
+
+    finite_indices = np.flatnonzero(finite_thresholds)
+    best_index = finite_indices[int(np.argmax(j_scores[finite_thresholds]))]
+    threshold = float(thresholds[best_index])
+    sensitivity = float(tpr[best_index])
+    specificity = float(1.0 - fpr[best_index])
+
+    return {
+        "threshold": threshold,
+        "j_stat": float(j_scores[best_index]),
+        "sensitivity": sensitivity,
+        "specificity": specificity,
+    }
+
+
 # --------------------------------------------------------------------------------------
 # I/O helpers
 # --------------------------------------------------------------------------------------

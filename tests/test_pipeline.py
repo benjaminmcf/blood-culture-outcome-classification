@@ -27,7 +27,9 @@ from training_utils import (
     export_lr_coefficients_csv,
     render_decision_rules_text,
     compare_predictions,
+    select_threshold_by_youdens_index,
 )
+from python_scripts.inference import resolve_inference_threshold
 
 
 # -----------------------------------------------------------------------------
@@ -128,6 +130,52 @@ class TestPerformanceMetrics:
         expected_j = expected_recall + expected_spec - 1
         
         assert abs(metrics["j_stat"] - expected_j) < 1e-9
+
+    def test_youden_threshold_selection(self):
+        """Youden threshold should maximize sensitivity + specificity - 1."""
+        y_true = np.array([0, 0, 0, 1, 1, 1])
+        y_proba = np.array([0.05, 0.1, 0.2, 0.6, 0.8, 0.9])
+
+        result = select_threshold_by_youdens_index(y_true, y_proba)
+
+        assert result["threshold"] == 0.6
+        assert result["j_stat"] == 1.0
+        assert result["sensitivity"] == 1.0
+        assert result["specificity"] == 1.0
+
+    def test_youden_threshold_requires_both_classes(self):
+        """Youden threshold selection should require labeled positives and negatives."""
+        y_true = np.array([1, 1, 1])
+        y_proba = np.array([0.4, 0.8, 0.9])
+
+        with pytest.raises(ValueError, match="both binary classes"):
+            select_threshold_by_youdens_index(y_true, y_proba)
+
+    def test_inference_youden_threshold_uses_metadata(self):
+        """Inference should load a saved training/CV Youden threshold."""
+        meta = {
+            "youden_threshold": 0.42,
+            "youden_j": 0.5,
+            "youden_sensitivity": 0.8,
+            "youden_specificity": 0.7,
+            "youden_threshold_source": "nested_cv_out_of_fold",
+        }
+
+        threshold, method, source, info = resolve_inference_threshold(
+            meta, threshold=0.3, use_youdens=True, model_name="demo"
+        )
+
+        assert threshold == 0.42
+        assert method == "youden"
+        assert source == "nested_cv_out_of_fold"
+        assert info["training_cv_youden_j"] == 0.5
+
+    def test_inference_youden_threshold_requires_metadata(self):
+        """Inference should not compute a Youden threshold from inference data."""
+        with pytest.raises(ValueError, match="Re-run training"):
+            resolve_inference_threshold(
+                {}, threshold=0.3, use_youdens=True, model_name="demo"
+            )
 
 
 # -----------------------------------------------------------------------------
