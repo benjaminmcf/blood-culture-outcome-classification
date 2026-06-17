@@ -168,8 +168,23 @@ def compute_weights(y: pd.Series, weight: float) -> Tuple[Dict[int, float], floa
     return weights, pos_weight_xg
 
 
+def resolve_imbalance_strategy(
+    y: pd.Series,
+    weight: float,
+    strategy: str,
+) -> Tuple[Dict[int, float] | None, float]:
+    """Resolve class-weight settings for the requested imbalance strategy."""
+    strategy = strategy.lower()
+    if strategy == "balanced":
+        return compute_weights(y, weight)
+    if strategy == "none":
+        logging.info("No class weighting requested; using scale_pos_weight=1.0")
+        return None, 1.0
+    raise ValueError(f"Unknown imbalance strategy: {strategy}")
+
+
 def build_model(
-    model_key: str, *, random_state: int, class_weights: Dict[int, float], pos_weight_xg: float
+    model_key: str, *, random_state: int, class_weights: Dict[int, float] | None, pos_weight_xg: float
 ):
     """Instantiate the estimator for a given key.
 
@@ -215,7 +230,7 @@ def select_features(
     y: pd.Series,
     *,
     random_state_boruta: int,
-    class_weights: Dict[int, float],
+    class_weights: Dict[int, float] | None,
     feature_names: List[str],
 ) -> Tuple[pd.DataFrame, List[str]]:
     """Select features using the requested method and return reduced X and names.
@@ -305,7 +320,7 @@ def nested_cross_validate(
     fs_method: str = "all",
     model_key: str = "",
     fs_random_state: int = 42,
-    class_weights: Dict[int, float] = None,
+    class_weights: Dict[int, float] | None = None,
     feature_names: List[str] = None,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]:
     """Run StratifiedKFold CV with Feature Selection INSIDE the loop (Nested CV).

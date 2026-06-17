@@ -85,15 +85,15 @@ Four classifier types are implemented, all available via scikit-learn or XGBoost
 
 ### Decision Tree (DT)
 
-A single `DecisionTreeClassifier` with balanced class weights and a maximum depth of 3. Decision rules are exported in both human-readable text and structured JSON format, enabling deployment without a Python runtime.
+A single `DecisionTreeClassifier` with a maximum depth of 3. By default, balanced class weights are used; this can be disabled with the `none` imbalance strategy. Decision rules are exported in both human-readable text and structured JSON format, enabling deployment without a Python runtime.
 
 ### Random Forest (RF)
 
-A `RandomForestClassifier` ensemble of 100 decision trees with balanced class weights, a maximum depth of 3 per tree, and out-of-bag scoring enabled. The model is deployed via the saved scikit-learn pipeline object.
+A `RandomForestClassifier` ensemble of 100 decision trees with a maximum depth of 3 per tree and out-of-bag scoring enabled. By default, balanced class weights are used; this can be disabled with the `none` imbalance strategy. The model is deployed via the saved scikit-learn pipeline object.
 
 ### XGBoost (XG)
 
-An `XGBClassifier` with gradient-boosted trees. The `scale_pos_weight` parameter is set to the class imbalance ratio (n_negative / n_positive) to handle the typically imbalanced blood culture dataset. 100 estimators are used with a learning rate of 0.01 and a maximum tree depth of 3.
+An `XGBClassifier` with gradient-boosted trees. By default, the `scale_pos_weight` parameter is set to the class imbalance ratio (n_negative / n_positive) to handle the typically imbalanced blood culture dataset; this can be set to 1.0 with the `none` imbalance strategy. 100 estimators are used with a learning rate of 0.01 and a maximum tree depth of 3.
 
 ### Logistic Regression (LR)
 
@@ -111,11 +111,13 @@ This approach allows inference using only arithmetic operations — suitable for
 
 ## Class Imbalance Handling
 
-Blood culture datasets are typically imbalanced, with negative cultures substantially outnumbering positive ones (positive rates often 5–15%). The pipeline addresses this through:
+Blood culture datasets are typically imbalanced, with negative cultures substantially outnumbering positive ones (positive rates often 5–15%). The default `balanced` strategy addresses this through:
 
 1. **Balanced class weights:** Computed as `n_samples / (n_classes × n_samples_per_class)` and passed to all classifiers that support the `class_weight` parameter
 2. **`scale_pos_weight` for XGBoost:** Explicitly set to `n_negative / n_positive`
 3. **Probability thresholding:** The default threshold of 0.3 (rather than 0.5) compensates for the prior probability skew during inference. During training, the pipeline also selects a per-model Youden threshold from cross-validation out-of-fold probabilities and saves it with the model metadata; inference can then apply this frozen threshold without using test labels for threshold selection
+
+The alternative `none` strategy disables training-time class weighting (`class_weight=None` for scikit-learn models and `scale_pos_weight=1.0` for XGBoost). Under this strategy, class imbalance is handled only by post-training threshold selection.
 
 ## Feature Selection
 
@@ -124,7 +126,7 @@ Blood culture datasets are typically imbalanced, with negative cultures substant
 The pipeline uses the Boruta all-relevant feature selection method (Kursa & Rudnicki, 2010). Boruta is a wrapper around Random Forest that iteratively compares real feature importance against shadow (permuted) features. A feature is confirmed as relevant only if its importance consistently exceeds that of the best shadow feature across multiple iterations.
 
 Implementation details:
-- Base estimator: `RandomForestClassifier(n_jobs=-1, class_weight='balanced', max_depth=3)`
+- Base estimator: `RandomForestClassifier(n_jobs=-1, class_weight=<selected strategy>, max_depth=3)`
 - Maximum 100 iterations
 - Significance level α = 0.05
 - Features confirmed or tentatively accepted by Boruta are retained
@@ -240,6 +242,7 @@ Each trained model has an accompanying JSON metadata file (`models/*.json`) cont
 - Model type and configuration
 - Feature space and selection method
 - Selected feature list
+- Imbalance strategy
 - Default probability threshold and saved cross-validation Youden threshold
 - Paths to model and feature list files
 

@@ -16,7 +16,6 @@ import pandas as pd
 
 from sklearn.base import clone
 from .training_utils import (
-    compute_weights,
     ensure_dirs,
     get_feature_spaces,
     init_logging,
@@ -33,6 +32,7 @@ from .training_utils import (
     plot_roc_curve,
     plot_confusion_matrix,
     select_threshold_by_youdens_index,
+    resolve_imbalance_strategy,
 )
 from .reporting import generate_training_report
 
@@ -43,6 +43,7 @@ from .reporting import generate_training_report
 
 ALL_MODELS = ["dt", "rf", "xg", "lr"]
 ALL_FS_METHODS = ["boruta", "rfe"]
+ALL_IMBALANCE_STRATEGIES = ["balanced", "none"]
 
 
 def parse_args() -> argparse.Namespace:
@@ -68,6 +69,16 @@ def parse_args() -> argparse.Namespace:
             "Feature selection methods. Options: boruta, rfe, none, all. "
             "'none' uses all features without selection. "
             "'all' runs every available method. Default: boruta."
+        ),
+    )
+    parser.add_argument(
+        "--imbalance-strategy",
+        choices=ALL_IMBALANCE_STRATEGIES,
+        default="balanced",
+        help=(
+            "Training-time imbalance handling. 'balanced' uses class weights "
+            "and XGBoost scale_pos_weight (default); 'none' disables training-time "
+            "class weighting so threshold tuning is the only imbalance correction."
         ),
     )
     return parser.parse_args()
@@ -138,9 +149,15 @@ def main() -> None:
     feature_spaces = get_feature_spaces(config)
     model_keys = resolve_models(args.models)
     feature_selection_methods = resolve_fs_methods(args.fs)
+    imbalance_strategy = args.imbalance_strategy
     weights_list = [1]
 
-    logging.info("Models: %s | Feature Selection: %s", model_keys, feature_selection_methods)  
+    logging.info(
+        "Models: %s | Feature Selection: %s | Imbalance Strategy: %s",
+        model_keys,
+        feature_selection_methods,
+        imbalance_strategy,
+    )
 
     results_rows = []
     plots_dict = {}
@@ -150,7 +167,9 @@ def main() -> None:
 
         for model_key in model_keys:
             for weight in weights_list:
-                class_weights, pos_weight_xg = compute_weights(y, weight)
+                class_weights, pos_weight_xg = resolve_imbalance_strategy(
+                    y, weight, imbalance_strategy
+                )
                 estimator = build_model(
                     model_key,
                     random_state=RANDOM_STATE,
@@ -159,9 +178,10 @@ def main() -> None:
                 )
 
                 logging.info(
-                    "Model=%s | Features=%s | weight=%.2f | class_weights=%s | pos_weight_xg=%.4f",
+                    "Model=%s | Features=%s | imbalance_strategy=%s | weight=%.2f | class_weights=%s | pos_weight_xg=%.4f",
                     model_key,
                     feature_space_name,
+                    imbalance_strategy,
                     weight,
                     class_weights,
                     pos_weight_xg,
@@ -195,14 +215,17 @@ def main() -> None:
                     roc_b64 = plot_roc_curve(agg_data["y_true"], agg_data["y_proba"], title=f"ROC: {model_key} using {feature_space_name}")
                     cm_b64 = plot_confusion_matrix(agg_data["y_true"], agg_data["y_pred"], title=f"Confusion Matrix: {model_key}")
                     
-                    plots_dict[f"{model_key}_{feature_space_name}_{weight}_{fsm}"] = {"roc": roc_b64, "cm": cm_b64}
+                    imbalance_suffix = "" if imbalance_strategy == "balanced" else f"_{imbalance_strategy}"
+                    model_artifact_name = f"{model_key}_{feature_space_name}_{weight}_{fsm}{imbalance_suffix}"
+                    plots_dict[model_artifact_name] = {"roc": roc_b64, "cm": cm_b64}
 
                     # Summarize validation metrics
                     summary = summarize_metrics(metrics)
                     summary.update(
                         {
-                            "model": f"{model_key}_{feature_space_name}_{weight}_{fsm}",
+                            "model": model_artifact_name,
                             "feature_space": feature_space_name,
+                            "imbalance_strategy": imbalance_strategy,
                             "class_weight": weight,
                             "selection_method": fsm,
                             "youden_threshold": youden_info["threshold"],
@@ -241,21 +264,22 @@ def main() -> None:
                     # Save artifacts
                     feature_list_path = (
                         paths["features"]
-                        / f"{model_key}_{feature_space_name}_{weight}_{fsm}.txt"
+                        / f"{model_artifact_name}.txt"
                     )
                     save_feature_list(feature_list_path, final_selected_features)
 
                     model_path = (
-                        paths["models"] / f"{model_key}_{feature_space_name}_{weight}_{fsm}.sav"
+                        paths["models"] / f"{model_artifact_name}.sav"
                     )
                     save_model(model_path, final_model)
                     
                     # Save metadata
-                    metadata_path = paths["models"] / f"{model_key}_{feature_space_name}_{weight}_{fsm}.json"
+                    metadata_path = paths["models"] / f"{model_artifact_name}.json"
                     save_model_metadata(
                         metadata_path,
                         model_key=model_key,
                         feature_space=feature_space_name,
+                        imbalance_strategy=imbalance_strategy,
                         weight=float(weight),
                         fsm=fsm,
                         features=list(final_selected_features),

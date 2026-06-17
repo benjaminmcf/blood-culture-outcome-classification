@@ -167,10 +167,12 @@ def run_inference(
         fsm = meta["fsm"]
         features = meta["features"]
         model_path = meta["full_model_path"]
+        imbalance_strategy = meta.get("imbalance_strategy", "balanced")
+        imbalance_suffix = "" if imbalance_strategy == "balanced" else f"_{imbalance_strategy}"
         
         # Use weight formatted to 2 decimals for consistency in naming if needed, or just use what's in meta
         # The key for output filenames:
-        model_name = f"{model_key}_{feature_space}_{weight}_{fsm}"
+        model_name = f"{model_key}_{feature_space}_{weight}_{fsm}{imbalance_suffix}"
 
         if use_youdens and "youden_threshold" not in meta:
             skipped_youden_models.append(model_name)
@@ -219,7 +221,7 @@ def run_inference(
 
         if model_key == "lr":
             # Prefer existing exported coefficients; fallback to pipeline extraction
-            coeffs_csv = exports_dir / f"lr_coeffs_{feature_space}_{weight}_{fsm}.csv"
+            coeffs_csv = exports_dir / f"lr_coeffs_{feature_space}_{weight}_{fsm}{imbalance_suffix}.csv"
             if coeffs_csv.exists():
                 feats_order, weights_raw, intercept_raw = load_lr_coefficients_csv(coeffs_csv)
                 # Verify features match? 
@@ -263,8 +265,8 @@ def run_inference(
 
         elif model_key == "dt":
             # Prefer existing exported rules; fallback to model extraction
-            rules_txt = exports_dir / f"dt_rules_{feature_space}_{weight}_{fsm}.txt"
-            rules_json = exports_dir / f"dt_rules_{feature_space}_{weight}_{fsm}.json"
+            rules_txt = exports_dir / f"dt_rules_{feature_space}_{weight}_{fsm}{imbalance_suffix}.txt"
+            rules_json = exports_dir / f"dt_rules_{feature_space}_{weight}_{fsm}{imbalance_suffix}.json"
             if rules_json.exists():
                 tree_dict, saved_dt_rules_threshold = load_dt_rules_json(rules_json)
             else:
@@ -342,6 +344,7 @@ def run_inference(
         # Save predictions
         out_payload = {
             "model": model_name,
+            "imbalance_strategy": imbalance_strategy,
             "threshold_method": threshold_method,
             "threshold": effective_threshold,
             "threshold_source": threshold_source,
@@ -364,6 +367,7 @@ def run_inference(
             perf = compute_performance_metrics(y_true.values.astype(int), preds.astype(int), probs)
             perf_row = {
                 "model": model_name,
+                "imbalance_strategy": imbalance_strategy,
                 "threshold_method": threshold_method,
                 "threshold": effective_threshold,
                 "threshold_source": threshold_source,
@@ -416,6 +420,7 @@ def run_inference(
         n_pos_pred = int(out_df["yhat"].sum())
         predictions_summary.append({
             "model": m_name,
+            "imbalance_strategy": out_df["imbalance_strategy"].iloc[0],
             "threshold_method": out_df["threshold_method"].iloc[0],
             "threshold": round(float(out_df["threshold"].iloc[0]), 6),
             "threshold_source": out_df["threshold_source"].iloc[0],

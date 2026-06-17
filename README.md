@@ -85,6 +85,9 @@ bcoc-train
 # Train specific models without feature selection (fast)
 bcoc-train --models dt lr --fs none
 
+# Train without class weighting; use threshold tuning as the imbalance correction
+bcoc-train --imbalance-strategy none
+
 # Train all models with all feature selection combinations
 bcoc-train --models all --fs all
 ```
@@ -107,6 +110,7 @@ uv run bcoc-train --models dt lr --fs none
 |------|---------|---------|-------------|
 | `--models` | `dt`, `rf`, `xg`, `lr`, `all` | `all` | Models to train |
 | `--fs` | `boruta`, `rfe`, `none`, `all` | `boruta` | Feature selection method(s) |
+| `--imbalance-strategy` | `balanced`, `none` | `balanced` | Training-time imbalance handling. `none` disables class weights and XGBoost `scale_pos_weight`, leaving threshold tuning as the imbalance correction |
 
 ### Run Inference
 
@@ -150,7 +154,7 @@ When `--youdens` is used, models whose metadata does not contain a saved `youden
 ### Training (`bcoc-train`)
 
 1. Loads configuration from `config.json` and training data from `<DATA_DIR>/training_data.csv`
-2. Iterates over feature spaces (CBC_DIFF, CBC_DIFF_CPD), models, and feature selection methods
+2. Iterates over feature spaces (CBC_DIFF, CBC_DIFF_CPD), models, feature selection methods, and the requested imbalance strategy
 3. Performs **nested cross-validation** with feature selection inside each fold
 4. Selects a per-model Youden threshold from the training cross-validation out-of-fold probabilities
 5. Trains a final model on the full dataset with globally-selected features
@@ -158,7 +162,7 @@ When `--youdens` is used, models whose metadata does not contain a saved `youden
 
 **Outputs:**
 - `features/` — Selected feature lists (one per model configuration)
-- `models/` — Trained model objects (`.sav`) and metadata (`.json`, including saved Youden thresholds)
+- `models/` — Trained model objects (`.sav`) and metadata (`.json`, including imbalance strategy and saved Youden thresholds)
 - `results/results_cross_validation.csv` — Cross-validation metrics and saved Youden threshold summaries
 - `results/training_report.html` — HTML report with metrics table, ROC curves, and confusion matrices
 
@@ -172,7 +176,7 @@ When `--youdens` is used, models whose metadata does not contain a saved `youden
 6. If ground truth is available, computes performance metrics and generates plots
 
 **Outputs:**
-- `predictions/preds_*.csv` — Per-model predictions (`model`, `threshold_method`, `threshold`, `threshold_source`, `prob_pos`, `yhat`)
+- `predictions/preds_*.csv` — Per-model predictions (`model`, `imbalance_strategy`, `threshold_method`, `threshold`, `threshold_source`, `prob_pos`, `yhat`)
 - `predictions/cm_*.csv` — Confusion matrices (when ground truth available)
 - `predictions/metrics_summary.csv` — Performance metrics per model
 - `predictions/inference_report.html` — HTML report with metrics and visualizations

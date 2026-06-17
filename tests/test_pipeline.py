@@ -28,6 +28,8 @@ from training_utils import (
     render_decision_rules_text,
     compare_predictions,
     select_threshold_by_youdens_index,
+    resolve_imbalance_strategy,
+    build_model,
 )
 from python_scripts.inference import resolve_inference_threshold
 
@@ -176,6 +178,27 @@ class TestPerformanceMetrics:
             resolve_inference_threshold(
                 {}, threshold=0.3, use_youdens=True, model_name="demo"
             )
+
+    def test_no_imbalance_strategy_disables_class_weighting(self, sample_data):
+        """The 'none' strategy should leave model fitting unweighted."""
+        _, y = sample_data
+
+        class_weights, pos_weight_xg = resolve_imbalance_strategy(y, 1.0, "none")
+
+        assert class_weights is None
+        assert pos_weight_xg == 1.0
+
+    def test_no_imbalance_strategy_builds_unweighted_models(self):
+        """Unweighted settings should reach sklearn and XGBoost estimators."""
+        lr = build_model(
+            "lr", random_state=42, class_weights=None, pos_weight_xg=1.0
+        )
+        xg = build_model(
+            "xg", random_state=42, class_weights=None, pos_weight_xg=1.0
+        )
+
+        assert lr.named_steps["classifier"].class_weight is None
+        assert xg.scale_pos_weight == 1.0
 
 
 # -----------------------------------------------------------------------------
