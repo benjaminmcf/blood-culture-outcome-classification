@@ -62,11 +62,13 @@ def generate_training_report(
     config: Dict[str, Any],
     plots: Dict[str, Dict[str, str]] = None,
     feature_stability: Optional[Dict[str, pd.DataFrame]] = None,
+    holdout_metrics: Optional[pd.DataFrame] = None,
 ) -> None:
     """Generate an HTML report for the training run.
     
     plots: Dict mapping model_name -> {'roc': 'base64str', 'cm': 'base64str'}
     feature_stability: Dict mapping model_name -> feature stability DataFrame
+    holdout_metrics: DataFrame of untouched hold-out metrics, if requested
     """
     
     # Section 1: Dataset & Config
@@ -74,6 +76,8 @@ def generate_training_report(
     <h2>Run Configuration & Statistics</h2>
     <div class="meta-box">
         <p><strong>Total Samples:</strong> {dataset_info.get('n_total', 'N/A')}</p>
+        <p><strong>Development Samples:</strong> {dataset_info.get('n_development', dataset_info.get('n_total', 'N/A'))}</p>
+        <p><strong>Hold-out Samples:</strong> {dataset_info.get('n_holdout', 0)} ({dataset_info.get('holdout_fraction', 0) * 100:.1f}%)</p>
         <p><strong>Positive Class (1):</strong> {dataset_info.get('n_pos', 'N/A')} ({dataset_info.get('pct_pos', 0):.1f}%)</p>
         <p><strong>Negative Class (0):</strong> {dataset_info.get('n_neg', 'N/A')} ({dataset_info.get('pct_neg', 0):.1f}%)</p>
         <p><strong>Random State:</strong> {config.get('RANDOM_STATE', 'N/A')}</p>
@@ -108,10 +112,40 @@ def generate_training_report(
         df_display[numeric_cols] = df_display[numeric_cols].round(3)
         table_html += df_display[display_cols].to_html(index=False, classes="table", border=0)
 
+        if holdout_metrics is not None and not holdout_metrics.empty:
+            table_html += """
+            <h2>Hold-out Performance</h2>
+            <p>These metrics are computed once on the stratified hold-out set reserved before feature selection, cross-validation, threshold selection, and final model fitting. They estimate the specific trained model instance exported by this run and should be interpreted separately from the nested-CV procedure estimate.</p>
+            """
+            holdout_display = holdout_metrics.copy()
+            holdout_cols = [
+                "model",
+                "threshold_method",
+                "threshold",
+                "n_holdout",
+                "balanced_accuracy",
+                "recall",
+                "specificity",
+                "roc_auc",
+                "precision",
+                "j_stat",
+                "f2",
+            ]
+            holdout_cols = [c for c in holdout_cols if c in holdout_display.columns]
+            numeric_cols_holdout = holdout_display[
+                holdout_cols
+            ].select_dtypes(include=["float", "int"]).columns
+            holdout_display[numeric_cols_holdout] = holdout_display[
+                numeric_cols_holdout
+            ].round(3)
+            table_html += holdout_display[
+                holdout_cols
+            ].to_html(index=False, classes="table", border=0)
+
         if feature_stability:
             table_html += """
             <h2>Feature Selection Stability</h2>
-            <p>For each model, the table shows how often each candidate feature was selected across the outer cross-validation folds and whether it was included in the final model trained on the full dataset.</p>
+            <p>For each model, the table shows how often each candidate feature was selected across the outer cross-validation folds and whether it was included in the final model trained on the development dataset.</p>
             """
             for _, row in results_df.iterrows():
                 m_name = row["model"]

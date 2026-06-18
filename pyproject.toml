@@ -29,7 +29,6 @@ classifiers = [
 ]
 dependencies = [
     "boruta>=0.4.3",
-    "imbalanced-learn>=0.14.0",
     "ipykernel>=7.0.1",
     "matplotlib>=3.10.7",
     "numpy>=2.3.4",

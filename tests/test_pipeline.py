@@ -17,6 +17,7 @@ from sklearn.tree import DecisionTreeClassifier
 
 # Import functions to test (path is set up in conftest.py)
 from training_utils import (
+    compute_specificity,
     compute_performance_metrics,
     extract_lr_raw_params_from_pipeline,
     predict_lr_with_raw_params,
@@ -34,6 +35,7 @@ from training_utils import (
     summarize_feature_selection_stability,
 )
 from python_scripts.inference import resolve_inference_threshold
+from python_scripts.training import predict_positive_probabilities
 
 
 # -----------------------------------------------------------------------------
@@ -112,6 +114,13 @@ class TestPerformanceMetrics:
         assert metrics["specificity"] == 0.0
         assert metrics["tp"] == 0
         assert metrics["fn"] == 2
+
+    def test_specificity_zero_negative_denominator(self):
+        """Specificity returns 0.0 when there are no true negative cases."""
+        y_true = np.array([1, 1])
+        y_pred = np.array([1, 0])
+
+        assert compute_specificity(y_true, y_pred) == 0.0
 
     def test_roc_auc_requires_proba(self):
         """ROC AUC should be NaN without probabilities."""
@@ -264,6 +273,19 @@ class TestLRExtraction:
         
         # Should match within floating point tolerance
         np.testing.assert_array_almost_equal(proba_pipeline, proba_raw, decimal=9)
+
+    def test_predict_positive_probabilities_helper(self, sample_data, trained_lr_pipeline):
+        """Training helper should return the fitted model's positive probabilities."""
+        X, _ = sample_data
+        pipeline, _ = trained_lr_pipeline
+
+        proba = predict_positive_probabilities(pipeline, X)
+
+        np.testing.assert_array_almost_equal(
+            proba,
+            pipeline.predict_proba(X.values)[:, 1],
+            decimal=9,
+        )
 
     def test_threshold_affects_predictions(self, sample_data, trained_lr_pipeline):
         """Different thresholds should produce different binary predictions."""

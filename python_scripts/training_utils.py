@@ -17,7 +17,6 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from boruta import BorutaPy
-from imblearn.metrics import specificity_score
 from sklearn.base import clone
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_selection import RFE
@@ -292,6 +291,15 @@ def select_features(
 # --------------------------------------------------------------------------------------
 
 
+def compute_specificity(y_true: np.ndarray | pd.Series, y_pred: np.ndarray | pd.Series) -> float:
+    """Compute specificity (true negative rate) with zero-denominator handling."""
+    y_true = np.asarray(y_true, dtype=int)
+    y_pred = np.asarray(y_pred, dtype=int)
+    tn, fp, _, _ = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+    denominator = tn + fp
+    return float(tn / denominator) if denominator else 0.0
+
+
 def get_robust_n_splits(y: pd.Series, n_splits_target: int = 10) -> int:
     """Calculate a robust n_splits for StratifiedKFold based on class counts.
 
@@ -387,7 +395,7 @@ def nested_cross_validate(
         rec = recall_score(y_test, y_hat, zero_division=0)
         prec = precision_score(y_test, y_hat, zero_division=0)
         bac = balanced_accuracy_score(y_test, y_hat)
-        spec = float(specificity_score(y_test, y_hat))
+        spec = compute_specificity(y_test, y_hat)
         j_stat = rec + spec - 1
         denom = (4 * prec + rec)
         f2 = (5 * prec * rec) / denom if denom > 0 else 0.0
@@ -868,7 +876,7 @@ def compute_performance_metrics(
     recall = recall_score(y_true, y_pred, zero_division=0)
     precision = precision_score(y_true, y_pred, zero_division=0)
     bac = balanced_accuracy_score(y_true, y_pred)
-    spec = float(specificity_score(y_true, y_pred))
+    spec = compute_specificity(y_true, y_pred)
     j_stat = float(recall + spec - 1)
     denom = (4 * precision + recall)
     f2 = float((5 * precision * recall) / denom) if denom > 0 else 0.0

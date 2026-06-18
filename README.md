@@ -90,6 +90,9 @@ bcoc-train --imbalance-strategy none
 
 # Train all models with all feature selection combinations
 bcoc-train --models all --fs all
+
+# Reserve a stratified hold-out set for one-shot final model evaluation
+bcoc-train --holdout 0.2
 ```
 
 <details>
@@ -111,6 +114,7 @@ uv run bcoc-train --models dt lr --fs none
 | `--models` | `dt`, `rf`, `xg`, `lr`, `all` | `all` | Models to train |
 | `--fs` | `boruta`, `rfe`, `none`, `all` | `boruta` | Feature selection method(s) |
 | `--imbalance-strategy` | `balanced`, `none` | `balanced` | Training-time imbalance handling. `none` disables class weights and XGBoost `scale_pos_weight`, leaving threshold tuning as the imbalance correction |
+| `--holdout` | float from `0.0` to `<1.0` | `0.0` | Optional stratified hold-out fraction reserved before model development, e.g. `0.2` |
 
 ### Run Inference
 
@@ -154,17 +158,20 @@ When `--youdens` is used, models whose metadata does not contain a saved `youden
 ### Training (`bcoc-train`)
 
 1. Loads configuration from `config.json` and training data from `<DATA_DIR>/training_data.csv`
-2. Iterates over feature spaces (CBC_DIFF, CBC_DIFF_CPD), models, feature selection methods, and the requested imbalance strategy
-3. Performs **nested cross-validation** with feature selection inside each fold
-4. Records the selected feature set from each outer fold and summarizes feature-selection stability
-5. Selects a per-model Youden threshold from the training cross-validation out-of-fold probabilities
-6. Trains a final model on the full dataset with globally-selected features
-7. Saves artifacts and generates an HTML report
+2. Optionally reserves a stratified hold-out set before any model-development steps
+3. Iterates over feature spaces (CBC_DIFF, CBC_DIFF_CPD), models, feature selection methods, and the requested imbalance strategy
+4. Performs **nested cross-validation** with feature selection inside each fold on the development set only
+5. Records the selected feature set from each outer fold and summarizes feature-selection stability
+6. Selects a per-model Youden threshold from the development-set cross-validation out-of-fold probabilities
+7. Trains a final model on the development set with globally-selected development features
+8. If `--holdout` was used, evaluates the exported model once on the untouched hold-out set
+9. Saves artifacts and generates an HTML report
 
 **Outputs:**
 - `features/` — Selected feature lists (one per model configuration)
 - `models/` — Trained model objects (`.sav`) and metadata (`.json`, including imbalance strategy and saved Youden thresholds)
 - `results/results_cross_validation.csv` — Cross-validation metrics and saved Youden threshold summaries
+- `results/holdout_metrics.csv` — Independent hold-out metrics when `--holdout` is used
 - `results/feature_selection_stability.csv` — Per-model feature stability summary across outer CV folds
 - `results/feature_selection_by_fold.csv` — Fold-level selected feature records
 - `results/training_report.html` — HTML report with metrics table, feature stability tables, ROC curves, and confusion matrices

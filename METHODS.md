@@ -145,6 +145,8 @@ When run with `--fs none`, all features in the selected feature space are used w
 
 The pipeline implements nested (double) cross-validation to prevent optimistic bias from performing feature selection on the same data used for evaluation. This is critical when feature selection methods like Boruta are applied, as selecting features on the full dataset before CV leads to data leakage.
 
+Optionally, a stratified hold-out set can be reserved before any model-development step using `--holdout <fraction>`. When enabled, the hold-out set is excluded from feature selection, model training, model comparison, threshold selection, and all other development-stage decisions. Nested CV is then performed only on the remaining development set.
+
 ```
 ┌─────────────────────────────────────────────────┐
 │ Outer Loop: k-fold Stratified CV                │
@@ -169,19 +171,21 @@ The number of folds adapts dynamically to the dataset size. The target is 10-fol
 
 ### Feature Selection Stability
 
-During nested cross-validation, the pipeline records the selected feature set from every outer fold. These fold-level selections are summarized as a per-model stability table containing each candidate feature, the number of outer folds in which it was selected, and the percentage of folds in which it was selected. The same table flags whether each feature was included in the final model trained on the full dataset, making the final deployed feature subset explicit.
+During nested cross-validation, the pipeline records the selected feature set from every outer fold. These fold-level selections are summarized as a per-model stability table containing each candidate feature, the number of outer folds in which it was selected, and the percentage of folds in which it was selected. The same table flags whether each feature was included in the final model trained on the development dataset, making the final deployed feature subset explicit.
 
 The fold-level selections are saved to `results/feature_selection_by_fold.csv`, and the summarized stability table is saved to `results/feature_selection_stability.csv` and embedded in the training HTML report.
 
 ### Final Model Training
 
-After nested CV provides unbiased performance estimates, a final model is trained on the **entire** training dataset:
+After nested CV provides unbiased performance estimates, a final model is trained on the development dataset. When no hold-out split is requested, the development dataset is the entire training dataset; when `--holdout` is used, the development dataset excludes the reserved hold-out rows.
 
-1. Feature selection is performed once on the full dataset (global selection)
-2. The model is trained on all samples using the globally-selected features
+1. Feature selection is performed once on the development dataset
+2. The model is trained on all development samples using the selected features
 3. This model and its feature list are saved as deployment artifacts
 
 Note: The nested CV metrics estimate the generalisation performance of the *procedure* (feature selection + training), not of this specific final model instance.
+
+When a hold-out split is requested, the final trained model instance is evaluated once on the untouched hold-out set using the threshold selected from development-set cross-validation. These hold-out metrics are reported separately from nested CV metrics and provide an independent estimate for the specific exported model instance from that run.
 
 ## Performance Metrics
 
@@ -207,6 +211,7 @@ An HTML report generated after training containing:
 - Dataset statistics (total samples, class distribution)
 - Run configuration (random seeds)
 - Cross-validation results table ranked by balanced accuracy
+- Hold-out performance table when `--holdout` is used
 - Feature selection stability tables and final selected feature subsets
 - ROC curves per model (aggregated from nested CV out-of-fold predictions)
 - Confusion matrices per model
@@ -281,7 +286,6 @@ bcoc-infer                   # Run inference
 | pandas | ≥2.3.3 | Data manipulation |
 | numpy | ≥2.3.4 | Numerical operations |
 | matplotlib | ≥3.10.7 | ROC curves and confusion matrix plots |
-| imbalanced-learn | ≥0.14.0 | Resampling utilities |
 
 ## Pipeline Configuration
 

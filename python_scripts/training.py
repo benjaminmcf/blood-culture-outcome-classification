@@ -15,7 +15,9 @@ import numpy as np
 import pandas as pd
 
 from sklearn.base import clone
+from sklearn.model_selection import train_test_split
 from .training_utils import (
+    compute_performance_metrics,
     ensure_dirs,
     get_feature_spaces,
     init_logging,
@@ -82,6 +84,16 @@ def parse_args() -> argparse.Namespace:
             "class weighting so threshold tuning is the only imbalance correction."
         ),
     )
+    parser.add_argument(
+        "--holdout",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional stratified hold-out fraction reserved before model development "
+            "(e.g. 0.2). The hold-out set is excluded from feature selection, "
+            "cross-validation, threshold selection, and final model fitting."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -116,6 +128,18 @@ def resolve_fs_methods(raw: List[str]) -> List[str]:
     return list(dict.fromkeys(methods))  # dedupe, preserve order
 
 
+def predict_positive_probabilities(model, X: pd.DataFrame) -> np.ndarray:
+    """Return positive-class probabilities for a fitted model."""
+    try:
+        return model.predict_proba(X.values)[:, 1]
+    except Exception:
+        if hasattr(model, "decision_function"):
+            margins = model.decision_function(X.values)
+            return 1.0 / (1.0 + np.exp(-margins))
+        preds = model.predict(X.values)
+        return preds.astype(float)
+
+
 def main() -> None:
     args = parse_args()
     init_logging()
@@ -144,8 +168,37 @@ def main() -> None:
     with data_path.open("r") as f:
         lines = [line for line in f if not line.strip().startswith("#")]
     df_ml = pd.read_csv(io.StringIO("".join(lines)))
+
+    target_col = config["TARGET_COLUMN"]
+    holdout_fraction = float(args.holdout)
+    if not 0.0 <= holdout_fraction < 1.0:
+        logging.error("--holdout must be >= 0.0 and < 1.0")
+        sys.exit(1)
+
+    if holdout_fraction > 0:
+        try:
+            df_dev, df_holdout = train_test_split(
+                df_ml,
+                test_size=holdout_fraction,
+                stratify=df_ml[target_col],
+                random_state=RANDOM_STATE,
+            )
+        except ValueError as e:
+            logging.error("Failed to create stratified hold-out split: %s", e)
+            sys.exit(1)
+        df_dev = df_dev.reset_index(drop=True)
+        df_holdout = df_holdout.reset_index(drop=True)
+        logging.info(
+            "Reserved stratified hold-out set: %d/%d rows (%.1f%%)",
+            len(df_holdout),
+            len(df_ml),
+            holdout_fraction * 100,
+        )
+    else:
+        df_dev = df_ml.copy()
+        df_holdout = None
     
-    y = df_ml[config["TARGET_COLUMN"]]
+    y = df_dev[target_col]
 
     feature_spaces = get_feature_spaces(config)
     model_keys = resolve_models(args.models)
@@ -165,9 +218,10 @@ def main() -> None:
     feature_stability_tables = {}
     feature_stability_rows = []
     fold_feature_rows = []
+    holdout_rows = []
 
     for feature_space_name, cols in feature_spaces.items():
-        X_all = df_ml[cols].copy()
+        X_all = df_dev[cols].copy()
 
         for model_key in model_keys:
             for weight in weights_list:
@@ -241,7 +295,7 @@ def main() -> None:
                     )
                     results_rows.append(summary)
 
-                    # 2. Final Model Training (Global Feature Selection)
+                    # 2. Final Model Training (Development-Set Feature Selection)
                     # We retain this step to produce the final deployable model artifacts.
                     # Note: The performance of *this* specific model instance is approximated by the Nested CV results above,
                     # but technically acts on slightly different (subset) features if stability is low.
@@ -285,9 +339,39 @@ def main() -> None:
                             )
                     summary["n_final_features"] = len(final_selected_features)
 
-                    # Train on full data with selected features
+                    # Train on development data with selected features
                     final_model = clone(estimator)
                     final_model.fit(X_final_sel.values, y.values)
+
+                    if df_holdout is not None:
+                        X_holdout = df_holdout[final_selected_features].copy()
+                        y_holdout = df_holdout[target_col].astype(int)
+                        holdout_proba = predict_positive_probabilities(
+                            final_model, X_holdout
+                        )
+                        holdout_pred = (
+                            holdout_proba >= float(youden_info["threshold"])
+                        ).astype(int)
+                        holdout_metrics = compute_performance_metrics(
+                            y_holdout.values,
+                            holdout_pred,
+                            holdout_proba,
+                        )
+                        holdout_row = {
+                            "model": model_artifact_name,
+                            "feature_space": feature_space_name,
+                            "imbalance_strategy": imbalance_strategy,
+                            "class_weight": weight,
+                            "selection_method": fsm,
+                            "threshold_method": "youden",
+                            "threshold": youden_info["threshold"],
+                            "threshold_source": "nested_cv_out_of_fold",
+                            "n_development": len(df_dev),
+                            "n_holdout": len(df_holdout),
+                            "holdout_fraction": holdout_fraction,
+                        }
+                        holdout_row.update(holdout_metrics)
+                        holdout_rows.append(holdout_row)
                     
                     # Save artifacts
                     feature_list_path = (
@@ -317,6 +401,9 @@ def main() -> None:
                         youden_sensitivity=youden_info["sensitivity"],
                         youden_specificity=youden_info["specificity"],
                         youden_threshold_source="nested_cv_out_of_fold",
+                        holdout_fraction=holdout_fraction,
+                        n_development=len(df_dev),
+                        n_holdout=len(df_holdout) if df_holdout is not None else 0,
                         model_path=model_path.name,
                         feature_list_path=feature_list_path.name,
                     )
@@ -336,9 +423,18 @@ def main() -> None:
     pd.DataFrame(fold_feature_rows).to_csv(fold_features_path, index=False)
     logging.info("Wrote fold-level selected features to %s", fold_features_path)
 
+    holdout_df = pd.DataFrame(holdout_rows)
+    holdout_path = paths["results"] / "holdout_metrics.csv"
+    holdout_df.to_csv(holdout_path, index=False)
+    if df_holdout is not None:
+        logging.info("Wrote hold-out metrics to %s", holdout_path)
+
     # Generate HTML Report
     dataset_info = {
         "n_total": len(df_ml),
+        "n_development": len(df_dev),
+        "n_holdout": len(df_holdout) if df_holdout is not None else 0,
+        "holdout_fraction": holdout_fraction,
         "n_pos": int(y.sum()),
         "pct_pos": (y.sum() / len(y)) * 100,
         "n_neg": int((y == 0).sum()),
@@ -352,6 +448,7 @@ def main() -> None:
         config=config,
         plots=plots_dict,
         feature_stability=feature_stability_tables,
+        holdout_metrics=holdout_df if not holdout_df.empty else None,
     )
     logging.info("Wrote training report to %s", report_path)
 
