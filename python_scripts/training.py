@@ -33,6 +33,7 @@ from .training_utils import (
     plot_confusion_matrix,
     select_threshold_by_youdens_index,
     resolve_imbalance_strategy,
+    summarize_feature_selection_stability,
 )
 from .reporting import generate_training_report
 
@@ -161,6 +162,9 @@ def main() -> None:
 
     results_rows = []
     plots_dict = {}
+    feature_stability_tables = {}
+    feature_stability_rows = []
+    fold_feature_rows = []
 
     for feature_space_name, cols in feature_spaces.items():
         X_all = df_ml[cols].copy()
@@ -228,6 +232,7 @@ def main() -> None:
                             "imbalance_strategy": imbalance_strategy,
                             "class_weight": weight,
                             "selection_method": fsm,
+                            "n_candidate_features": len(cols),
                             "youden_threshold": youden_info["threshold"],
                             "youden_j": youden_info["j_stat"],
                             "youden_sensitivity": youden_info["sensitivity"],
@@ -256,6 +261,29 @@ def main() -> None:
                     if not final_selected_features:
                         logging.warning("No features selected for final model %s. Skipping save.", model_key)
                         continue
+
+                    stability_df = summarize_feature_selection_stability(
+                        feature_names=list(cols),
+                        selected_features_by_fold=agg_data["selected_features_by_fold"],
+                        final_selected_features=list(final_selected_features),
+                    )
+                    feature_stability_tables[model_artifact_name] = stability_df
+                    stability_export = stability_df.copy()
+                    stability_export.insert(0, "model", model_artifact_name)
+                    feature_stability_rows.extend(stability_export.to_dict("records"))
+
+                    for fold_idx, selected_features in enumerate(
+                        agg_data["selected_features_by_fold"], start=1
+                    ):
+                        for feature in selected_features:
+                            fold_feature_rows.append(
+                                {
+                                    "model": model_artifact_name,
+                                    "fold": fold_idx,
+                                    "feature": feature,
+                                }
+                            )
+                    summary["n_final_features"] = len(final_selected_features)
 
                     # Train on full data with selected features
                     final_model = clone(estimator)
@@ -300,6 +328,14 @@ def main() -> None:
     df_results.to_csv(results_path, index=False)
     logging.info("Wrote results to %s", results_path)
 
+    stability_path = paths["results"] / "feature_selection_stability.csv"
+    pd.DataFrame(feature_stability_rows).to_csv(stability_path, index=False)
+    logging.info("Wrote feature selection stability to %s", stability_path)
+
+    fold_features_path = paths["results"] / "feature_selection_by_fold.csv"
+    pd.DataFrame(fold_feature_rows).to_csv(fold_features_path, index=False)
+    logging.info("Wrote fold-level selected features to %s", fold_features_path)
+
     # Generate HTML Report
     dataset_info = {
         "n_total": len(df_ml),
@@ -315,6 +351,7 @@ def main() -> None:
         results_df=df_results,
         config=config,
         plots=plots_dict,
+        feature_stability=feature_stability_tables,
     )
     logging.info("Wrote training report to %s", report_path)
 

@@ -3,6 +3,7 @@ Reporting module for generating HTML summaries of training and inference runs.
 """
 
 from datetime import datetime
+import html
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -60,10 +61,12 @@ def generate_training_report(
     results_df: pd.DataFrame,
     config: Dict[str, Any],
     plots: Dict[str, Dict[str, str]] = None,
+    feature_stability: Optional[Dict[str, pd.DataFrame]] = None,
 ) -> None:
     """Generate an HTML report for the training run.
     
     plots: Dict mapping model_name -> {'roc': 'base64str', 'cm': 'base64str'}
+    feature_stability: Dict mapping model_name -> feature stability DataFrame
     """
     
     # Section 1: Dataset & Config
@@ -91,6 +94,8 @@ def generate_training_report(
         display_cols = [
             "model",
             "imbalance_strategy",
+            "selection_method",
+            "n_candidate_features", "n_final_features",
             "youden_threshold", "youden_j",
             "balanced_accuracy_mean", "balanced_accuracy_std",
             "recall_mean", "recall_std",
@@ -102,6 +107,47 @@ def generate_training_report(
         df_display = results_df.copy()
         df_display[numeric_cols] = df_display[numeric_cols].round(3)
         table_html += df_display[display_cols].to_html(index=False, classes="table", border=0)
+
+        if feature_stability:
+            table_html += """
+            <h2>Feature Selection Stability</h2>
+            <p>For each model, the table shows how often each candidate feature was selected across the outer cross-validation folds and whether it was included in the final model trained on the full dataset.</p>
+            """
+            for _, row in results_df.iterrows():
+                m_name = row["model"]
+                stability_df = feature_stability.get(m_name)
+                if stability_df is None or stability_df.empty:
+                    continue
+
+                final_features = stability_df.loc[
+                    stability_df["final_model_feature"], "feature"
+                ].astype(str).tolist()
+                final_feature_text = (
+                    ", ".join(html.escape(feature) for feature in final_features)
+                    if final_features
+                    else "None"
+                )
+
+                display_stability = stability_df.copy()
+                display_stability["pct_folds_selected"] = display_stability[
+                    "pct_folds_selected"
+                ].round(1)
+                display_stability["final_model_feature"] = display_stability[
+                    "final_model_feature"
+                ].map({True: "Yes", False: "No"})
+                display_cols_stability = [
+                    "feature",
+                    "folds_selected",
+                    "pct_folds_selected",
+                    "final_model_feature",
+                ]
+                table_html += f"<h3>Model: {html.escape(str(m_name))}</h3>"
+                table_html += (
+                    f"<p><strong>Final selected features:</strong> {final_feature_text}</p>"
+                )
+                table_html += display_stability[
+                    display_cols_stability
+                ].to_html(index=False, classes="table", border=0)
         
         # Section 3: Performance Visualization
         if plots:

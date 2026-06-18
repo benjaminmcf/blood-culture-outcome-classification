@@ -156,15 +156,18 @@ When `--youdens` is used, models whose metadata does not contain a saved `youden
 1. Loads configuration from `config.json` and training data from `<DATA_DIR>/training_data.csv`
 2. Iterates over feature spaces (CBC_DIFF, CBC_DIFF_CPD), models, feature selection methods, and the requested imbalance strategy
 3. Performs **nested cross-validation** with feature selection inside each fold
-4. Selects a per-model Youden threshold from the training cross-validation out-of-fold probabilities
-5. Trains a final model on the full dataset with globally-selected features
-6. Saves artifacts and generates an HTML report
+4. Records the selected feature set from each outer fold and summarizes feature-selection stability
+5. Selects a per-model Youden threshold from the training cross-validation out-of-fold probabilities
+6. Trains a final model on the full dataset with globally-selected features
+7. Saves artifacts and generates an HTML report
 
 **Outputs:**
 - `features/` — Selected feature lists (one per model configuration)
 - `models/` — Trained model objects (`.sav`) and metadata (`.json`, including imbalance strategy and saved Youden thresholds)
 - `results/results_cross_validation.csv` — Cross-validation metrics and saved Youden threshold summaries
-- `results/training_report.html` — HTML report with metrics table, ROC curves, and confusion matrices
+- `results/feature_selection_stability.csv` — Per-model feature stability summary across outer CV folds
+- `results/feature_selection_by_fold.csv` — Fold-level selected feature records
+- `results/training_report.html` — HTML report with metrics table, feature stability tables, ROC curves, and confusion matrices
 
 ### Inference (`bcoc-infer`)
 

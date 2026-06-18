@@ -341,6 +341,7 @@ def nested_cross_validate(
     y_true_all = []
     y_proba_all = []
     y_pred_all = []
+    selected_features_by_fold: List[List[str]] = []
 
     skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
     
@@ -362,6 +363,7 @@ def nested_cross_validate(
             class_weights=class_weights,
             feature_names=feature_names,
         )
+        selected_features_by_fold.append(list(selected_features))
         
         # Apply selection to test
         X_test_sel = X_test[selected_features].copy()
@@ -428,9 +430,45 @@ def nested_cross_validate(
         "y_true": np.array(y_true_all),
         "y_proba": np.array(y_proba_all),
         "y_pred": np.array(y_pred_all),
+        "selected_features_by_fold": selected_features_by_fold,
     }
     
     return metrics, agg_data
+
+
+def summarize_feature_selection_stability(
+    feature_names: List[str],
+    selected_features_by_fold: List[List[str]],
+    final_selected_features: List[str],
+) -> pd.DataFrame:
+    """Summarize how often each feature was selected across CV folds."""
+    n_folds = len(selected_features_by_fold)
+    final_set = set(final_selected_features)
+    rows = []
+
+    for feature in feature_names:
+        folds_selected = sum(
+            feature in set(selected_features)
+            for selected_features in selected_features_by_fold
+        )
+        pct_selected = (folds_selected / n_folds * 100) if n_folds else 0.0
+        rows.append(
+            {
+                "feature": feature,
+                "folds_selected": int(folds_selected),
+                "pct_folds_selected": float(pct_selected),
+                "final_model_feature": feature in final_set,
+            }
+        )
+
+    return (
+        pd.DataFrame(rows)
+        .sort_values(
+            ["folds_selected", "final_model_feature", "feature"],
+            ascending=[False, False, True],
+        )
+        .reset_index(drop=True)
+    )
 
 
 def summarize_metrics(metrics: Dict[str, np.ndarray]) -> Dict[str, float]:

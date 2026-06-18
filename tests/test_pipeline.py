@@ -30,6 +30,8 @@ from training_utils import (
     select_threshold_by_youdens_index,
     resolve_imbalance_strategy,
     build_model,
+    nested_cross_validate,
+    summarize_feature_selection_stability,
 )
 from python_scripts.inference import resolve_inference_threshold
 
@@ -199,6 +201,44 @@ class TestPerformanceMetrics:
 
         assert lr.named_steps["classifier"].class_weight is None
         assert xg.scale_pos_weight == 1.0
+
+    def test_nested_cv_records_selected_features_by_fold(self, sample_data):
+        """Nested CV should retain each outer fold's selected features."""
+        X, y = sample_data
+        estimator = LogisticRegression(max_iter=1000)
+        features = list(X.columns)
+
+        _, agg_data = nested_cross_validate(
+            estimator,
+            X,
+            y,
+            n_splits=3,
+            random_state=42,
+            fs_method="all",
+            model_key="lr",
+            feature_names=features,
+        )
+
+        assert len(agg_data["selected_features_by_fold"]) == 3
+        assert all(
+            selected_features == features
+            for selected_features in agg_data["selected_features_by_fold"]
+        )
+
+    def test_feature_selection_stability_summary(self):
+        """Stability summary should count fold selections and mark final features."""
+        stability = summarize_feature_selection_stability(
+            feature_names=["a", "b", "c"],
+            selected_features_by_fold=[["a", "b"], ["a"], ["a", "c"]],
+            final_selected_features=["a", "c"],
+        )
+
+        rows = stability.set_index("feature")
+        assert rows.loc["a", "folds_selected"] == 3
+        assert rows.loc["a", "pct_folds_selected"] == 100.0
+        assert rows.loc["b", "folds_selected"] == 1
+        assert not bool(rows.loc["b", "final_model_feature"])
+        assert bool(rows.loc["c", "final_model_feature"])
 
 
 # -----------------------------------------------------------------------------

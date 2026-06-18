@@ -167,6 +167,12 @@ The pipeline implements nested (double) cross-validation to prevent optimistic b
 
 The number of folds adapts dynamically to the dataset size. The target is 10-fold CV, but this is reduced automatically when the minority class has fewer than 10 samples per fold (enforced via `StratifiedKFold` constraints).
 
+### Feature Selection Stability
+
+During nested cross-validation, the pipeline records the selected feature set from every outer fold. These fold-level selections are summarized as a per-model stability table containing each candidate feature, the number of outer folds in which it was selected, and the percentage of folds in which it was selected. The same table flags whether each feature was included in the final model trained on the full dataset, making the final deployed feature subset explicit.
+
+The fold-level selections are saved to `results/feature_selection_by_fold.csv`, and the summarized stability table is saved to `results/feature_selection_stability.csv` and embedded in the training HTML report.
+
 ### Final Model Training
 
 After nested CV provides unbiased performance estimates, a final model is trained on the **entire** training dataset:
@@ -201,6 +207,7 @@ An HTML report generated after training containing:
 - Dataset statistics (total samples, class distribution)
 - Run configuration (random seeds)
 - Cross-validation results table ranked by balanced accuracy
+- Feature selection stability tables and final selected feature subsets
 - ROC curves per model (aggregated from nested CV out-of-fold predictions)
 - Confusion matrices per model
 
