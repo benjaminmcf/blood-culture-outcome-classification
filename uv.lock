@@ -27,7 +27,7 @@ wheels = [
 [[package]]
 name = "blood-culture-outcome-classification"
 version = "0.1.1"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "boruta" },
     { name = "ipykernel" },

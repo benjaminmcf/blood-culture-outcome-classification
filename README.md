@@ -38,6 +38,28 @@ uv sync
 pip install -e .
 ```
 
+The console commands are defined in `pyproject.toml` as `bcoc-train` and
+`bcoc-infer`. If you installed with `pip install -e .` inside an active Python
+environment, the commands should be available directly. If you used `uv sync`,
+either run commands through `uv run`:
+
+```bash
+uv run bcoc-train --help
+uv run bcoc-infer --help
+```
+
+or activate the virtual environment first:
+
+```bash
+source .venv/bin/activate
+bcoc-train --help
+bcoc-infer --help
+```
+
+If `bcoc-train: command not found` appears, the package has not been installed
+in the active environment, or the `.venv` created by `uv sync` has not been
+activated. The command has not been renamed.
+
 ### Data Preparation
 
 The pipeline reads datasets from the folder specified by `DATA_DIR` in `config.json` (default: `"datasets"`). The repository ships with a ready-to-use example dataset:
@@ -78,6 +100,10 @@ The required columns are defined in `config.json` (see [Configuration](#configur
 
 ### Train Models
 
+The examples below use the installed console command. Prefix them with `uv run`
+if using the repository without activating `.venv`, for example
+`uv run bcoc-train --models dt lr --fs none`.
+
 ```bash
 # Train all models with Boruta feature selection (default)
 bcoc-train
@@ -96,7 +122,7 @@ bcoc-train --holdout 0.2
 ```
 
 <details>
-<summary>Alternative ways to run (without installing)</summary>
+<summary>Alternative ways to run</summary>
 
 ```bash
 # Using python -m (no install required)
@@ -233,6 +259,50 @@ The LR pipelines export raw-space coefficients so predictions can be made withou
 3. Apply threshold: `yhat = 1 if p ≥ threshold else 0`
 
 Use `--validate` to verify these predictions match the original pipeline.
+
+### Using Exported DT Rules
+
+Decision tree models are exported as both human-readable text
+(`exports/dt_rules_*.txt`) and structured JSON (`exports/dt_rules_*.json`).
+The text files contain nested `if`/`else` rules that can be reviewed manually or
+implemented in environments that do not run Python.
+
+Example excerpt:
+
+```text
+# probability_threshold=0.128205
+if MLR <= 4.545000:
+  if MONO#(10^9/L) <= 0.155000:
+    if WBC(10^9/L) <= 3.795000:
+      => leaf: pred_class=0 prob_pos=0.000 pred_thresh=0 counts=[1.0, 0.0]
+    else:  # WBC(10^9/L) > 3.795000
+      => leaf: pred_class=1 prob_pos=0.800 pred_thresh=1 counts=[0.2, 0.8]
+  else:  # MONO#(10^9/L) > 0.155000
+    if LYMPH%(%) <= 1.505000:
+      => leaf: pred_class=1 prob_pos=1.000 pred_thresh=1 counts=[0.0, 1.0]
+    else:  # LYMPH%(%) > 1.505000
+      => leaf: pred_class=0 prob_pos=0.035 pred_thresh=0 counts=[0.965, 0.035]
+else:  # MLR > 4.545000
+  if EO%(%) <= 2.735000:
+    => leaf: pred_class=1 prob_pos=1.000 pred_thresh=1 counts=[0.0, 1.0]
+  else:  # EO%(%) > 2.735000
+    => leaf: pred_class=0 prob_pos=0.000 pred_thresh=0 counts=[1.0, 0.0]
+```
+
+To apply the rules, start at the first `if`, follow the branch matching the
+patient's feature values, and continue until a leaf is reached. At each leaf:
+
+- `prob_pos` is the estimated probability of the positive class for samples in
+  that leaf.
+- `pred_class` is the decision tree's majority-class prediction at that leaf.
+- `pred_thresh` is the threshold-adjusted prediction: `1` if `prob_pos` is at
+  least the exported `probability_threshold`, otherwise `0`.
+- `counts` are the class counts or weighted class proportions stored in that
+  leaf, ordered as `[negative_class, positive_class]`.
+
+When inference is run with a different threshold, including `--youdens`, the
+exported DT text and JSON rules are regenerated with the active
+`probability_threshold` and updated `pred_thresh` values.
 
 ## Configuration
 

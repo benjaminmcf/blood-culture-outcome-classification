@@ -283,6 +283,12 @@ bcoc-train                   # Train models
 bcoc-infer                   # Run inference
 ```
 
+The `bcoc-train` and `bcoc-infer` commands are console entry points declared in
+`pyproject.toml`. They are available directly after installing the package into
+the active Python environment, for example with `pip install -e .`, or after
+activating the `.venv` created by `uv sync`. Without activating the environment,
+the same commands can be run as `uv run bcoc-train` and `uv run bcoc-infer`.
+
 ## Software Dependencies
 
 | Package | Version | Purpose |
@@ -322,7 +328,7 @@ To adapt the pipeline to a different clinical problem:
 1. Set `TARGET_COLUMN` to the binary outcome column in your dataset
 2. Define `FEATURE_SPACES` with one or more named sets of predictor variables
 3. Ensure input CSVs contain all specified columns
-4. Run `bcoc-train` and `bcoc-infer` — no code changes required
+4. Run `bcoc-train` and `bcoc-infer`, or `uv run bcoc-train` and `uv run bcoc-infer` if using uv without activating `.venv` — no code changes required
 
 ## Example Notebook
 
