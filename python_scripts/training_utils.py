@@ -300,6 +300,106 @@ def compute_specificity(y_true: np.ndarray | pd.Series, y_pred: np.ndarray | pd.
     return float(tn / denominator) if denominator else 0.0
 
 
+def compute_prevalence_adjusted_metrics(
+    sensitivity: float,
+    specificity: float,
+    prevalence: float,
+) -> Dict[str, float]:
+    """Estimate prevalence-dependent metrics from sensitivity and specificity.
+
+    The returned rates are expected values under the assumed positive-class
+    prevalence. This is useful for showing how PPV, NPV, and error burden vary
+    across clinically plausible base rates without retraining the model.
+    """
+    sensitivity = float(sensitivity)
+    specificity = float(specificity)
+    prevalence = float(prevalence)
+
+    if not 0.0 < prevalence < 1.0:
+        raise ValueError("prevalence must be > 0.0 and < 1.0")
+    for name, value in {
+        "sensitivity": sensitivity,
+        "specificity": specificity,
+    }.items():
+        if not np.isfinite(value) or not 0.0 <= value <= 1.0:
+            raise ValueError(f"{name} must be finite and between 0.0 and 1.0")
+
+    tp_rate = sensitivity * prevalence
+    fn_rate = (1.0 - sensitivity) * prevalence
+    tn_rate = specificity * (1.0 - prevalence)
+    fp_rate = (1.0 - specificity) * (1.0 - prevalence)
+
+    ppv_denominator = tp_rate + fp_rate
+    npv_denominator = tn_rate + fn_rate
+    ppv = tp_rate / ppv_denominator if ppv_denominator else np.nan
+    npv = tn_rate / npv_denominator if npv_denominator else np.nan
+    f1_denominator = ppv + sensitivity
+    f1 = (2.0 * ppv * sensitivity / f1_denominator) if f1_denominator else np.nan
+
+    return {
+        "prevalence": prevalence,
+        "prevalence_pct": prevalence * 100.0,
+        "sensitivity": sensitivity,
+        "specificity": specificity,
+        "ppv": float(ppv),
+        "npv": float(npv),
+        "f1": float(f1),
+        "accuracy": float(tp_rate + tn_rate),
+        "balanced_accuracy": float((sensitivity + specificity) / 2.0),
+        "false_positive_rate": float(1.0 - specificity),
+        "false_negative_rate": float(1.0 - sensitivity),
+        "true_positives_per_100": float(tp_rate * 100.0),
+        "false_positives_per_100": float(fp_rate * 100.0),
+        "true_negatives_per_100": float(tn_rate * 100.0),
+        "false_negatives_per_100": float(fn_rate * 100.0),
+        "positive_predictions_per_100": float((tp_rate + fp_rate) * 100.0),
+        "negative_predictions_per_100": float((tn_rate + fn_rate) * 100.0),
+    }
+
+
+def summarize_prevalence_sensitivity(
+    *,
+    model: str,
+    feature_space: str,
+    imbalance_strategy: str,
+    class_weight: float,
+    selection_method: str,
+    threshold_method: str,
+    threshold: float,
+    threshold_source: str,
+    sensitivity: float,
+    specificity: float,
+    prevalence_values: Iterable[float],
+    observed_prevalence: float | None = None,
+) -> pd.DataFrame:
+    """Build a prevalence sensitivity table for one model/threshold pair."""
+    rows = []
+    for prevalence in prevalence_values:
+        row = {
+            "model": model,
+            "feature_space": feature_space,
+            "imbalance_strategy": imbalance_strategy,
+            "class_weight": float(class_weight),
+            "selection_method": selection_method,
+            "threshold_method": threshold_method,
+            "threshold": float(threshold),
+            "threshold_source": threshold_source,
+        }
+        if observed_prevalence is not None:
+            row["observed_prevalence"] = float(observed_prevalence)
+            row["observed_prevalence_pct"] = float(observed_prevalence) * 100.0
+        row.update(
+            compute_prevalence_adjusted_metrics(
+                sensitivity=sensitivity,
+                specificity=specificity,
+                prevalence=float(prevalence),
+            )
+        )
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
 def get_robust_n_splits(y: pd.Series, n_splits_target: int = 10) -> int:
     """Calculate a robust n_splits for StratifiedKFold based on class counts.
 
@@ -553,6 +653,49 @@ def plot_confusion_matrix(y_true, y_pred, title="Confusion Matrix") -> str:
     plt.savefig(buf, format='png', bbox_inches='tight')
     plt.close()
     return base64.b64encode(buf.getvalue()).decode('utf-8')
+
+
+def plot_prevalence_sensitivity(
+    prevalence_df: pd.DataFrame,
+    title: str = "Prevalence Sensitivity",
+) -> str:
+    """Plot prevalence-dependent metrics and return a base64 PNG."""
+    if prevalence_df.empty:
+        return ""
+
+    plot_df = prevalence_df.sort_values("prevalence").copy()
+    x = plot_df["prevalence_pct"]
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+
+    for metric, label in [("ppv", "PPV"), ("npv", "NPV"), ("f1", "F1")]:
+        if metric in plot_df.columns:
+            axes[0].plot(x, plot_df[metric], marker="o", label=label)
+    axes[0].set_xlabel("Assumed positive prevalence (%)")
+    axes[0].set_ylabel("Metric value")
+    axes[0].set_ylim(0.0, 1.05)
+    axes[0].grid(True, alpha=0.3)
+    axes[0].legend(loc="best")
+
+    for metric, label in [
+        ("false_positives_per_100", "False positives per 100"),
+        ("false_negatives_per_100", "False negatives per 100"),
+    ]:
+        if metric in plot_df.columns:
+            axes[1].plot(x, plot_df[metric], marker="o", label=label)
+    axes[1].set_xlabel("Assumed positive prevalence (%)")
+    axes[1].set_ylabel("Expected count per 100 cultures")
+    axes[1].set_ylim(bottom=0.0)
+    axes[1].grid(True, alpha=0.3)
+    axes[1].legend(loc="best")
+
+    fig.suptitle(title)
+    fig.tight_layout()
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    plt.close(fig)
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
 def select_threshold_by_youdens_index(

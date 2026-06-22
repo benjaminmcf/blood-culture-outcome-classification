@@ -63,12 +63,16 @@ def generate_training_report(
     plots: Dict[str, Dict[str, str]] = None,
     feature_stability: Optional[Dict[str, pd.DataFrame]] = None,
     holdout_metrics: Optional[pd.DataFrame] = None,
+    prevalence_sensitivity: Optional[pd.DataFrame] = None,
+    prevalence_plots: Optional[Dict[str, str]] = None,
 ) -> None:
     """Generate an HTML report for the training run.
     
     plots: Dict mapping model_name -> {'roc': 'base64str', 'cm': 'base64str'}
     feature_stability: Dict mapping model_name -> feature stability DataFrame
     holdout_metrics: DataFrame of untouched hold-out metrics, if requested
+    prevalence_sensitivity: DataFrame of prevalence-adjusted metrics
+    prevalence_plots: Dict mapping model_name -> prevalence sensitivity plot
     """
     
     # Section 1: Dataset & Config
@@ -141,6 +145,65 @@ def generate_training_report(
             table_html += holdout_display[
                 holdout_cols
             ].to_html(index=False, classes="table", border=0)
+
+        if prevalence_sensitivity is not None and not prevalence_sensitivity.empty:
+            table_html += """
+            <h2>Prevalence Sensitivity Analysis</h2>
+            <p>Metrics are recalculated across assumed positive-class prevalences from 5% to 15% using the sensitivity and specificity observed in nested-CV out-of-fold predictions. This highlights prevalence-dependent behavior such as PPV, NPV, F1, and expected false positives or false negatives per 100 cultures. The full prevalence grid and both fixed/default and Youden thresholds are saved to <code>results/prevalence_sensitivity.csv</code>; the report displays the Youden-threshold summary at 5%, 10%, and 15%.</p>
+            """
+            prevalence_display_all = prevalence_sensitivity.copy()
+            if "threshold_method" in prevalence_display_all.columns:
+                prevalence_display_all = prevalence_display_all[
+                    prevalence_display_all["threshold_method"] == "youden"
+                ]
+            if "prevalence_pct" in prevalence_display_all.columns:
+                prevalence_display_all = prevalence_display_all[
+                    prevalence_display_all["prevalence_pct"].round(1).isin(
+                        [5.0, 10.0, 15.0]
+                    )
+                ]
+
+            prevalence_cols = [
+                "prevalence_pct",
+                "threshold_method",
+                "threshold",
+                "sensitivity",
+                "specificity",
+                "ppv",
+                "npv",
+                "f1",
+                "false_positives_per_100",
+                "false_negatives_per_100",
+            ]
+            prevalence_cols = [
+                c for c in prevalence_cols if c in prevalence_display_all.columns
+            ]
+            for _, row in results_df.iterrows():
+                m_name = row["model"]
+                model_prevalence = prevalence_display_all[
+                    prevalence_display_all["model"] == m_name
+                ].copy()
+                if model_prevalence.empty:
+                    continue
+
+                numeric_cols_prevalence = model_prevalence[
+                    prevalence_cols
+                ].select_dtypes(include=["float", "int"]).columns
+                model_prevalence[numeric_cols_prevalence] = model_prevalence[
+                    numeric_cols_prevalence
+                ].round(3)
+
+                table_html += f"<h3>Model: {html.escape(str(m_name))}</h3>"
+                prevalence_plot = (prevalence_plots or {}).get(m_name)
+                if prevalence_plot:
+                    table_html += (
+                        f"<div><img src='data:image/png;base64,{prevalence_plot}' "
+                        f"alt='Prevalence sensitivity {html.escape(str(m_name))}' "
+                        "style='max-width: 800px; border: 1px solid #ddd; padding: 5px;'></div>"
+                    )
+                table_html += model_prevalence[
+                    prevalence_cols
+                ].to_html(index=False, classes="table", border=0)
 
         if feature_stability:
             table_html += """

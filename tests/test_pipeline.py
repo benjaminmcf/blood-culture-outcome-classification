@@ -17,6 +17,7 @@ from sklearn.tree import DecisionTreeClassifier
 
 # Import functions to test (path is set up in conftest.py)
 from training_utils import (
+    compute_prevalence_adjusted_metrics,
     compute_specificity,
     compute_performance_metrics,
     extract_lr_raw_params_from_pipeline,
@@ -29,6 +30,7 @@ from training_utils import (
     render_decision_rules_text,
     compare_predictions,
     select_threshold_by_youdens_index,
+    summarize_prevalence_sensitivity,
     resolve_imbalance_strategy,
     build_model,
     nested_cross_validate,
@@ -121,6 +123,45 @@ class TestPerformanceMetrics:
         y_pred = np.array([1, 0])
 
         assert compute_specificity(y_true, y_pred) == 0.0
+
+    def test_prevalence_adjusted_metrics(self):
+        """Prevalence adjustment should derive PPV, NPV, and error burden."""
+        metrics = compute_prevalence_adjusted_metrics(
+            sensitivity=0.8,
+            specificity=0.9,
+            prevalence=0.1,
+        )
+
+        assert metrics["ppv"] == pytest.approx(0.08 / 0.17)
+        assert metrics["npv"] == pytest.approx(0.81 / 0.83)
+        assert metrics["f1"] == pytest.approx(
+            2 * metrics["ppv"] * 0.8 / (metrics["ppv"] + 0.8)
+        )
+        assert metrics["accuracy"] == pytest.approx(0.89)
+        assert metrics["false_positives_per_100"] == pytest.approx(9.0)
+        assert metrics["false_negatives_per_100"] == pytest.approx(2.0)
+
+    def test_prevalence_sensitivity_summary(self):
+        """Prevalence sensitivity summary should include model metadata."""
+        summary = summarize_prevalence_sensitivity(
+            model="demo",
+            feature_space="CBC",
+            imbalance_strategy="none",
+            class_weight=1.0,
+            selection_method="all",
+            threshold_method="youden",
+            threshold=0.42,
+            threshold_source="nested_cv_out_of_fold",
+            sensitivity=0.8,
+            specificity=0.9,
+            prevalence_values=[0.05, 0.15],
+            observed_prevalence=0.12,
+        )
+
+        assert list(summary["model"]) == ["demo", "demo"]
+        assert list(summary["prevalence"]) == [0.05, 0.15]
+        assert set(summary["threshold_method"]) == {"youden"}
+        assert summary.loc[0, "observed_prevalence"] == pytest.approx(0.12)
 
     def test_roc_auc_requires_proba(self):
         """ROC AUC should be NaN without probabilities."""

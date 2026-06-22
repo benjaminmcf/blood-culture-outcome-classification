@@ -203,6 +203,12 @@ The following metrics are computed during both cross-validation and inference:
 | **LR+** | Recall / (1 − Specificity) | Positive likelihood ratio |
 | **LR−** | (1 − Recall) / Specificity | Negative likelihood ratio |
 
+### Prevalence Sensitivity Analysis
+
+Because precision/PPV, NPV, F1 score, and false-positive or false-negative burden depend on outcome prevalence, the training pipeline also performs a prevalence sensitivity analysis across assumed blood culture positivity values from 5% to 15% in 1% increments. For each model, sensitivity and specificity are estimated from nested-CV out-of-fold predictions at both the fixed default threshold and the Youden-selected threshold. These sensitivity/specificity pairs are then used to derive expected PPV, NPV, F1 score, accuracy, and false positives/false negatives per 100 cultures at each assumed prevalence.
+
+This analysis is saved to `results/prevalence_sensitivity.csv` and summarized in the HTML training report. It is intended to show how prevalence-dependent operating characteristics change across clinically plausible positive-class base rates; it does not replace external validation in populations with different case mix or laboratory practices.
+
 ## Reporting
 
 ### Training Report (`results/training_report.html`)
@@ -212,6 +218,7 @@ An HTML report generated after training containing:
 - Run configuration (random seeds)
 - Cross-validation results table ranked by balanced accuracy
 - Hold-out performance table when `--holdout` is used
+- Prevalence sensitivity plots and tables across 5-15% assumed positivity
 - Feature selection stability tables and final selected feature subsets
 - ROC curves per model (aggregated from nested CV out-of-fold predictions)
 - Confusion matrices per model

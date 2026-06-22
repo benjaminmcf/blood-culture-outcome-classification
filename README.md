@@ -163,18 +163,49 @@ When `--youdens` is used, models whose metadata does not contain a saved `youden
 4. Performs **nested cross-validation** with feature selection inside each fold on the development set only
 5. Records the selected feature set from each outer fold and summarizes feature-selection stability
 6. Selects a per-model Youden threshold from the development-set cross-validation out-of-fold probabilities
-7. Trains a final model on the development set with globally-selected development features
-8. If `--holdout` was used, evaluates the exported model once on the untouched hold-out set
-9. Saves artifacts and generates an HTML report
+7. Computes a prevalence sensitivity analysis across 5-15% assumed positivity using nested-CV threshold performance
+8. Trains a final model on the development set with globally-selected development features
+9. If `--holdout` was used, evaluates the exported model once on the untouched hold-out set
+10. Saves artifacts and generates an HTML report
 
 **Outputs:**
 - `features/` — Selected feature lists (one per model configuration)
 - `models/` — Trained model objects (`.sav`) and metadata (`.json`, including imbalance strategy and saved Youden thresholds)
 - `results/results_cross_validation.csv` — Cross-validation metrics and saved Youden threshold summaries
+- `results/prevalence_sensitivity.csv` — PPV, NPV, F1, and expected false positives/false negatives per 100 cultures across 5-15% assumed positivity
 - `results/holdout_metrics.csv` — Independent hold-out metrics when `--holdout` is used
 - `results/feature_selection_stability.csv` — Per-model feature stability summary across outer CV folds
 - `results/feature_selection_by_fold.csv` — Fold-level selected feature records
-- `results/training_report.html` — HTML report with metrics table, feature stability tables, ROC curves, and confusion matrices
+- `results/training_report.html` — HTML report with metrics table, prevalence sensitivity plots, feature stability tables, ROC curves, and confusion matrices
+
+#### Prevalence Sensitivity Calculations
+
+The prevalence sensitivity analysis does not retrain models at each prevalence.
+It uses each model's nested-CV sensitivity and specificity at a fixed threshold
+and asks how prevalence-dependent metrics would be expected to change if the
+positive-class prevalence were 5%, 6%, ..., 15%.
+
+In `results/prevalence_sensitivity.csv`, `prevalence_pct` is the assumed number
+of truly positive cultures per 100 cultures. For example, `prevalence_pct = 10`
+means 10 truly positive cultures and 90 truly negative cultures per 100.
+
+The per-100 rates are expected counts under that assumed prevalence:
+
+```text
+false_negatives_per_100 = prevalence * (1 - sensitivity) * 100
+false_positives_per_100 = (1 - prevalence) * (1 - specificity) * 100
+```
+
+For example, at 10% prevalence, sensitivity 0.80, and specificity 0.90:
+
+```text
+false_negatives_per_100 = 0.10 * (1 - 0.80) * 100 = 2
+false_positives_per_100 = 0.90 * (1 - 0.90) * 100 = 9
+```
+
+This means the model would be expected to miss about 2 true positives and
+incorrectly flag about 9 true negatives per 100 cultures, assuming the same
+sensitivity and specificity.
 
 ### Inference (`bcoc-infer`)
 

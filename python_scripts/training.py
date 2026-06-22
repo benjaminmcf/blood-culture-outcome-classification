@@ -33,8 +33,10 @@ from .training_utils import (
     nested_cross_validate,
     plot_roc_curve,
     plot_confusion_matrix,
+    plot_prevalence_sensitivity,
     select_threshold_by_youdens_index,
     resolve_imbalance_strategy,
+    summarize_prevalence_sensitivity,
     summarize_feature_selection_stability,
 )
 from .reporting import generate_training_report
@@ -47,6 +49,8 @@ from .reporting import generate_training_report
 ALL_MODELS = ["dt", "rf", "xg", "lr"]
 ALL_FS_METHODS = ["boruta", "rfe"]
 ALL_IMBALANCE_STRATEGIES = ["balanced", "none"]
+DEFAULT_THRESHOLD = 0.3
+PREVALENCE_SENSITIVITY_VALUES = np.round(np.arange(0.05, 0.151, 0.01), 2)
 
 
 def parse_args() -> argparse.Namespace:
@@ -219,6 +223,8 @@ def main() -> None:
     feature_stability_rows = []
     fold_feature_rows = []
     holdout_rows = []
+    prevalence_sensitivity_rows = []
+    prevalence_plots_dict = {}
 
     for feature_space_name, cols in feature_spaces.items():
         X_all = df_dev[cols].copy()
@@ -276,6 +282,51 @@ def main() -> None:
                     imbalance_suffix = "" if imbalance_strategy == "balanced" else f"_{imbalance_strategy}"
                     model_artifact_name = f"{model_key}_{feature_space_name}_{weight}_{fsm}{imbalance_suffix}"
                     plots_dict[model_artifact_name] = {"roc": roc_b64, "cm": cm_b64}
+
+                    threshold_specs = [
+                        ("default", DEFAULT_THRESHOLD, "fixed_default"),
+                        (
+                            "youden",
+                            float(youden_info["threshold"]),
+                            "nested_cv_out_of_fold",
+                        ),
+                    ]
+                    for threshold_method, threshold_value, threshold_source in threshold_specs:
+                        threshold_pred = (
+                            agg_data["y_proba"] >= float(threshold_value)
+                        ).astype(int)
+                        threshold_metrics = compute_performance_metrics(
+                            agg_data["y_true"],
+                            threshold_pred,
+                            agg_data["y_proba"],
+                        )
+                        prevalence_df = summarize_prevalence_sensitivity(
+                            model=model_artifact_name,
+                            feature_space=feature_space_name,
+                            imbalance_strategy=imbalance_strategy,
+                            class_weight=float(weight),
+                            selection_method=fsm,
+                            threshold_method=threshold_method,
+                            threshold=float(threshold_value),
+                            threshold_source=threshold_source,
+                            sensitivity=threshold_metrics["recall"],
+                            specificity=threshold_metrics["specificity"],
+                            prevalence_values=PREVALENCE_SENSITIVITY_VALUES,
+                            observed_prevalence=float(np.mean(agg_data["y_true"])),
+                        )
+                        prevalence_sensitivity_rows.extend(
+                            prevalence_df.to_dict("records")
+                        )
+                        if threshold_method == "youden":
+                            prevalence_plots_dict[
+                                model_artifact_name
+                            ] = plot_prevalence_sensitivity(
+                                prevalence_df,
+                                title=(
+                                    "Prevalence Sensitivity: "
+                                    f"{model_artifact_name} (Youden threshold)"
+                                ),
+                            )
 
                     # Summarize validation metrics
                     summary = summarize_metrics(metrics)
@@ -395,7 +446,7 @@ def main() -> None:
                         weight=float(weight),
                         fsm=fsm,
                         features=list(final_selected_features),
-                        threshold=0.3, 
+                        threshold=DEFAULT_THRESHOLD,
                         youden_threshold=youden_info["threshold"],
                         youden_j=youden_info["j_stat"],
                         youden_sensitivity=youden_info["sensitivity"],
@@ -429,6 +480,11 @@ def main() -> None:
     if df_holdout is not None:
         logging.info("Wrote hold-out metrics to %s", holdout_path)
 
+    prevalence_df = pd.DataFrame(prevalence_sensitivity_rows)
+    prevalence_path = paths["results"] / "prevalence_sensitivity.csv"
+    prevalence_df.to_csv(prevalence_path, index=False)
+    logging.info("Wrote prevalence sensitivity analysis to %s", prevalence_path)
+
     # Generate HTML Report
     dataset_info = {
         "n_total": len(df_ml),
@@ -449,6 +505,8 @@ def main() -> None:
         plots=plots_dict,
         feature_stability=feature_stability_tables,
         holdout_metrics=holdout_df if not holdout_df.empty else None,
+        prevalence_sensitivity=prevalence_df if not prevalence_df.empty else None,
+        prevalence_plots=prevalence_plots_dict,
     )
     logging.info("Wrote training report to %s", report_path)
 
