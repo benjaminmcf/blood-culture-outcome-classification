@@ -579,6 +579,432 @@ def summarize_feature_selection_stability(
     )
 
 
+def summarize_feature_distributions(
+    df: pd.DataFrame,
+    feature_names: List[str],
+) -> pd.DataFrame:
+    """Summarize numeric training distributions for drift checks.
+
+    Only aggregate statistics are stored, so this profile can be saved with the
+    model outputs without retaining patient-level training values.
+    """
+    rows = []
+    for feature in feature_names:
+        if feature not in df.columns:
+            rows.append(
+                {
+                    "feature": feature,
+                    "status": "missing_reference_feature",
+                    "n_reference": 0,
+                    "n_reference_non_missing": 0,
+                    "reference_missing_rate": 1.0,
+                    "reference_mean": np.nan,
+                    "reference_std": np.nan,
+                    "reference_median": np.nan,
+                    "reference_q25": np.nan,
+                    "reference_q75": np.nan,
+                    "reference_iqr": np.nan,
+                    "reference_min": np.nan,
+                    "reference_max": np.nan,
+                }
+            )
+            continue
+
+        values = pd.to_numeric(df[feature], errors="coerce")
+        non_missing = values.dropna()
+        q25 = float(non_missing.quantile(0.25)) if len(non_missing) else np.nan
+        q75 = float(non_missing.quantile(0.75)) if len(non_missing) else np.nan
+        rows.append(
+            {
+                "feature": feature,
+                "status": "ok" if len(non_missing) else "no_numeric_reference_values",
+                "n_reference": int(len(values)),
+                "n_reference_non_missing": int(len(non_missing)),
+                "reference_missing_rate": float(values.isna().mean()) if len(values) else np.nan,
+                "reference_mean": float(non_missing.mean()) if len(non_missing) else np.nan,
+                "reference_std": float(non_missing.std(ddof=0)) if len(non_missing) else np.nan,
+                "reference_median": float(non_missing.median()) if len(non_missing) else np.nan,
+                "reference_q25": q25,
+                "reference_q75": q75,
+                "reference_iqr": float(q75 - q25) if np.isfinite(q25) and np.isfinite(q75) else np.nan,
+                "reference_min": float(non_missing.min()) if len(non_missing) else np.nan,
+                "reference_max": float(non_missing.max()) if len(non_missing) else np.nan,
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def compare_feature_distribution_shift(
+    reference_profile: pd.DataFrame,
+    current_df: pd.DataFrame,
+    feature_names: List[str],
+    *,
+    smd_threshold: float = 0.5,
+    median_iqr_threshold: float = 0.5,
+    missing_rate_threshold: float = 0.10,
+    outside_range_threshold: float = 0.05,
+    std_ratio_low: float = 0.5,
+    std_ratio_high: float = 2.0,
+) -> pd.DataFrame:
+    """Compare incoming feature distributions against the training profile.
+
+    Flags are effect-size based. They are intended as practical warnings about
+    distribution shift, not formal proof that the incoming population differs.
+    """
+    if reference_profile.empty:
+        return pd.DataFrame()
+
+    reference_by_feature = reference_profile.set_index("feature", drop=False)
+    rows = []
+    for feature in feature_names:
+        flags = []
+        if feature not in reference_by_feature.index:
+            rows.append(
+                {
+                    "feature": feature,
+                    "status": "missing_reference_profile",
+                    "flagged": True,
+                    "shift_flag_count": 1,
+                    "shift_flags": "missing_reference_profile",
+                }
+            )
+            continue
+
+        ref = reference_by_feature.loc[feature]
+        if feature not in current_df.columns:
+            rows.append(
+                {
+                    "feature": feature,
+                    "status": "missing_current_feature",
+                    "flagged": True,
+                    "shift_flag_count": 1,
+                    "shift_flags": "missing_current_feature",
+                    "n_reference": int(ref.get("n_reference", 0)),
+                    "n_current": 0,
+                }
+            )
+            continue
+
+        current = pd.to_numeric(current_df[feature], errors="coerce")
+        current_non_missing = current.dropna()
+        n_current = int(len(current))
+        n_current_non_missing = int(len(current_non_missing))
+        current_missing_rate = float(current.isna().mean()) if n_current else np.nan
+
+        reference_mean = float(ref.get("reference_mean", np.nan))
+        reference_std = float(ref.get("reference_std", np.nan))
+        reference_median = float(ref.get("reference_median", np.nan))
+        reference_iqr = float(ref.get("reference_iqr", np.nan))
+        reference_min = float(ref.get("reference_min", np.nan))
+        reference_max = float(ref.get("reference_max", np.nan))
+        reference_missing_rate = float(ref.get("reference_missing_rate", np.nan))
+
+        current_mean = float(current_non_missing.mean()) if n_current_non_missing else np.nan
+        current_std = float(current_non_missing.std(ddof=0)) if n_current_non_missing else np.nan
+        current_median = float(current_non_missing.median()) if n_current_non_missing else np.nan
+
+        pooled_std = np.nan
+        if np.isfinite(reference_std) and np.isfinite(current_std):
+            pooled_std = float(np.sqrt((reference_std**2 + current_std**2) / 2.0))
+        smd = (
+            float((current_mean - reference_mean) / pooled_std)
+            if np.isfinite(pooled_std) and pooled_std > 0
+            else np.nan
+        )
+
+        median_iqr_shift = (
+            float((current_median - reference_median) / reference_iqr)
+            if np.isfinite(reference_iqr) and reference_iqr > 0
+            else np.nan
+        )
+        missing_rate_diff = (
+            float(current_missing_rate - reference_missing_rate)
+            if np.isfinite(current_missing_rate) and np.isfinite(reference_missing_rate)
+            else np.nan
+        )
+        std_ratio = (
+            float(current_std / reference_std)
+            if np.isfinite(current_std) and np.isfinite(reference_std) and reference_std > 0
+            else np.nan
+        )
+        outside_reference_range_rate = np.nan
+        if (
+            n_current_non_missing
+            and np.isfinite(reference_min)
+            and np.isfinite(reference_max)
+        ):
+            outside_reference_range_rate = float(
+                ((current_non_missing < reference_min) | (current_non_missing > reference_max)).mean()
+            )
+
+        if np.isfinite(smd) and abs(smd) >= smd_threshold:
+            flags.append("standardized_mean_difference")
+        if np.isfinite(median_iqr_shift) and abs(median_iqr_shift) >= median_iqr_threshold:
+            flags.append("median_iqr_shift")
+        if np.isfinite(missing_rate_diff) and abs(missing_rate_diff) >= missing_rate_threshold:
+            flags.append("missingness_shift")
+        if (
+            np.isfinite(outside_reference_range_rate)
+            and outside_reference_range_rate >= outside_range_threshold
+        ):
+            flags.append("outside_reference_range")
+        if np.isfinite(std_ratio) and (std_ratio <= std_ratio_low or std_ratio >= std_ratio_high):
+            flags.append("variance_shift")
+
+        rows.append(
+            {
+                "feature": feature,
+                "status": "ok",
+                "flagged": bool(flags),
+                "shift_flag_count": len(flags),
+                "shift_flags": ";".join(flags),
+                "n_reference": int(ref.get("n_reference", 0)),
+                "n_reference_non_missing": int(ref.get("n_reference_non_missing", 0)),
+                "n_current": n_current,
+                "n_current_non_missing": n_current_non_missing,
+                "reference_missing_rate": reference_missing_rate,
+                "current_missing_rate": current_missing_rate,
+                "missing_rate_diff": missing_rate_diff,
+                "reference_mean": reference_mean,
+                "current_mean": current_mean,
+                "standardized_mean_difference": smd,
+                "reference_std": reference_std,
+                "current_std": current_std,
+                "std_ratio": std_ratio,
+                "reference_median": reference_median,
+                "current_median": current_median,
+                "median_iqr_shift": median_iqr_shift,
+                "reference_min": reference_min,
+                "reference_max": reference_max,
+                "outside_reference_range_rate": outside_reference_range_rate,
+            }
+        )
+
+    return (
+        pd.DataFrame(rows)
+        .sort_values(
+            ["flagged", "shift_flag_count", "feature"],
+            ascending=[False, False, True],
+        )
+        .reset_index(drop=True)
+    )
+
+
+def summarize_feature_correlations(
+    X: pd.DataFrame,
+    feature_names: List[str],
+    *,
+    method: str = "spearman",
+) -> pd.DataFrame:
+    """Return a feature correlation matrix for numeric candidate inputs."""
+    numeric_X = X[feature_names].apply(pd.to_numeric, errors="coerce")
+    return numeric_X.corr(method=method)
+
+
+def summarize_feature_correlation_pairs(
+    corr_matrix: pd.DataFrame,
+    *,
+    feature_space: str,
+    high_correlation_threshold: float = 0.80,
+) -> pd.DataFrame:
+    """Return one row per feature pair from a correlation matrix."""
+    columns = [
+        "feature_space",
+        "feature_1",
+        "feature_2",
+        "correlation",
+        "abs_correlation",
+        "high_correlation",
+    ]
+    rows = []
+    features = list(corr_matrix.columns)
+    for i, feature_1 in enumerate(features):
+        for feature_2 in features[i + 1:]:
+            corr = corr_matrix.loc[feature_1, feature_2]
+            if pd.isna(corr):
+                continue
+            abs_corr = abs(float(corr))
+            rows.append(
+                {
+                    "feature_space": feature_space,
+                    "feature_1": feature_1,
+                    "feature_2": feature_2,
+                    "correlation": float(corr),
+                    "abs_correlation": abs_corr,
+                    "high_correlation": abs_corr >= high_correlation_threshold,
+                }
+            )
+
+    if not rows:
+        return pd.DataFrame(columns=columns)
+
+    return (
+        pd.DataFrame(rows, columns=columns)
+        .sort_values(
+            ["abs_correlation", "feature_1", "feature_2"],
+            ascending=[False, True, True],
+        )
+        .reset_index(drop=True)
+    )
+
+
+def plot_feature_correlation_heatmap(
+    corr_matrix: pd.DataFrame,
+    title: str = "Feature Correlation",
+) -> str:
+    """Plot a correlation heatmap and return a base64 PNG."""
+    if corr_matrix.empty:
+        return ""
+
+    n_features = len(corr_matrix.columns)
+    fig_size = max(6, min(14, n_features * 0.35))
+    fig, ax = plt.subplots(figsize=(fig_size, fig_size))
+    im = ax.imshow(corr_matrix.values, cmap="coolwarm", vmin=-1, vmax=1)
+    ax.set_title(title)
+    ax.set_xticks(range(n_features))
+    ax.set_yticks(range(n_features))
+    label_size = 6 if n_features > 25 else 8
+    ax.set_xticklabels(corr_matrix.columns, rotation=90, fontsize=label_size)
+    ax.set_yticklabels(corr_matrix.index, fontsize=label_size)
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    fig.tight_layout()
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    plt.close(fig)
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
+
+
+def _positive_class_shap_values(shap_output) -> np.ndarray:
+    """Extract positive-class SHAP values across SHAP return shapes."""
+    values = getattr(shap_output, "values", shap_output)
+    if isinstance(values, list):
+        values = values[1] if len(values) > 1 else values[0]
+    values = np.asarray(values)
+    if values.ndim == 3:
+        if values.shape[-1] == 2:
+            values = values[:, :, 1]
+        elif values.shape[0] == 2:
+            values = values[1, :, :]
+    if values.ndim != 2:
+        raise ValueError(f"Unexpected SHAP value shape: {values.shape}")
+    return values.astype(float)
+
+
+def compute_shap_feature_importance(
+    model,
+    X: pd.DataFrame,
+    *,
+    model_key: str,
+    random_state: int,
+    max_samples: int = 200,
+    max_background: int = 100,
+) -> pd.DataFrame:
+    """Compute mean absolute SHAP values for a fitted final model.
+
+    Tree models use TreeExplainer when possible. Logistic-regression pipelines
+    and fallback models use a sampled permutation explainer over predicted
+    positive-class probabilities.
+    """
+    if X.empty:
+        return pd.DataFrame()
+
+    try:
+        import shap
+    except ImportError as exc:
+        raise ImportError(
+            "SHAP is not installed. Install project dependencies to enable SHAP analysis."
+        ) from exc
+
+    sample = X.sample(
+        n=min(max_samples, len(X)),
+        random_state=random_state,
+    ).copy()
+    background = sample.sample(
+        n=min(max_background, len(sample)),
+        random_state=random_state,
+    ).copy()
+
+    if model_key in {"dt", "rf", "xg"}:
+        explainer = shap.TreeExplainer(model)
+        shap_output = explainer.shap_values(sample.values)
+    else:
+        def predict_positive(data):
+            arr = np.asarray(data, dtype=float)
+            try:
+                return model.predict_proba(arr)[:, 1]
+            except Exception:
+                if hasattr(model, "decision_function"):
+                    margins = model.decision_function(arr)
+                    return 1.0 / (1.0 + np.exp(-margins))
+                return model.predict(arr).astype(float)
+
+        masker = shap.maskers.Independent(background.values)
+        explainer = shap.Explainer(
+            predict_positive,
+            masker,
+            algorithm="permutation",
+            seed=random_state,
+        )
+        shap_output = explainer(
+            sample.values,
+            max_evals=max(2 * sample.shape[1] + 1, 20),
+        )
+
+    shap_values = _positive_class_shap_values(shap_output)
+    if shap_values.shape[1] != len(sample.columns):
+        raise ValueError(
+            "SHAP output feature count does not match selected feature count"
+        )
+
+    rows = []
+    for idx, feature in enumerate(sample.columns):
+        feature_values = shap_values[:, idx]
+        rows.append(
+            {
+                "feature": feature,
+                "mean_abs_shap": float(np.mean(np.abs(feature_values))),
+                "mean_shap": float(np.mean(feature_values)),
+                "std_abs_shap": float(np.std(np.abs(feature_values), ddof=0)),
+                "n_shap_samples": int(shap_values.shape[0]),
+            }
+        )
+
+    importance = (
+        pd.DataFrame(rows)
+        .sort_values(["mean_abs_shap", "feature"], ascending=[False, True])
+        .reset_index(drop=True)
+    )
+    importance["shap_rank"] = np.arange(1, len(importance) + 1)
+    return importance
+
+
+def plot_shap_feature_importance(
+    shap_importance: pd.DataFrame,
+    title: str = "SHAP Feature Importance",
+    *,
+    top_n: int = 20,
+) -> str:
+    """Plot mean absolute SHAP feature importance and return a base64 PNG."""
+    if shap_importance.empty:
+        return ""
+
+    plot_df = shap_importance.head(top_n).sort_values("mean_abs_shap")
+    fig_height = max(3.5, 0.35 * len(plot_df) + 1.5)
+    fig, ax = plt.subplots(figsize=(7, fig_height))
+    ax.barh(plot_df["feature"], plot_df["mean_abs_shap"], color="#4c78a8")
+    ax.set_xlabel("Mean absolute SHAP value")
+    ax.set_title(title)
+    ax.grid(axis="x", alpha=0.25)
+    fig.tight_layout()
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight")
+    plt.close(fig)
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
+
+
 def summarize_metrics(metrics: Dict[str, np.ndarray]) -> Dict[str, float]:
     """Return mean/std for each metric array rounded to 2 decimals."""
     def m(x: np.ndarray) -> float:

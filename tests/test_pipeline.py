@@ -29,6 +29,11 @@ from training_utils import (
     export_lr_coefficients_csv,
     render_decision_rules_text,
     compare_predictions,
+    summarize_feature_distributions,
+    compare_feature_distribution_shift,
+    summarize_feature_correlations,
+    summarize_feature_correlation_pairs,
+    plot_shap_feature_importance,
     select_threshold_by_youdens_index,
     summarize_prevalence_sensitivity,
     resolve_imbalance_strategy,
@@ -289,6 +294,118 @@ class TestPerformanceMetrics:
         assert rows.loc["b", "folds_selected"] == 1
         assert not bool(rows.loc["b", "final_model_feature"])
         assert bool(rows.loc["c", "final_model_feature"])
+
+
+# -----------------------------------------------------------------------------
+# Test: Distribution Shift Checks
+# -----------------------------------------------------------------------------
+
+class TestDistributionShiftChecks:
+    """Tests for training-vs-inference distribution shift checks."""
+
+    def test_distribution_profile_has_expected_summary(self):
+        """Training reference profile should store aggregate numeric statistics."""
+        df = pd.DataFrame({"a": [1.0, 2.0, 3.0, np.nan], "b": [10, 11, 12, 13]})
+
+        profile = summarize_feature_distributions(df, ["a", "b"])
+        rows = profile.set_index("feature")
+
+        assert rows.loc["a", "n_reference"] == 4
+        assert rows.loc["a", "n_reference_non_missing"] == 3
+        assert rows.loc["a", "reference_missing_rate"] == pytest.approx(0.25)
+        assert rows.loc["a", "reference_median"] == pytest.approx(2.0)
+
+    def test_distribution_shift_flags_shifted_feature(self):
+        """A materially shifted incoming feature should be flagged."""
+        train = pd.DataFrame({"a": np.arange(20, dtype=float)})
+        incoming = pd.DataFrame({"a": np.arange(20, dtype=float) + 20.0})
+        profile = summarize_feature_distributions(train, ["a"])
+
+        report = compare_feature_distribution_shift(profile, incoming, ["a"])
+        row = report.iloc[0]
+
+        assert bool(row["flagged"])
+        assert "standardized_mean_difference" in row["shift_flags"]
+        assert row["outside_reference_range_rate"] > 0
+
+    def test_distribution_shift_allows_similar_feature(self):
+        """Similar incoming data should not be flagged."""
+        train = pd.DataFrame({"a": np.arange(20, dtype=float)})
+        incoming = pd.DataFrame({"a": np.arange(20, dtype=float)})
+        profile = summarize_feature_distributions(train, ["a"])
+
+        report = compare_feature_distribution_shift(profile, incoming, ["a"])
+
+        assert not bool(report.iloc[0]["flagged"])
+        assert report.iloc[0]["shift_flags"] == ""
+
+    def test_distribution_shift_flags_missing_current_feature(self):
+        """Missing inference features should be reported as flagged."""
+        train = pd.DataFrame({"a": np.arange(20, dtype=float)})
+        incoming = pd.DataFrame({"b": np.arange(20, dtype=float)})
+        profile = summarize_feature_distributions(train, ["a"])
+
+        report = compare_feature_distribution_shift(profile, incoming, ["a"])
+
+        assert bool(report.iloc[0]["flagged"])
+        assert report.iloc[0]["status"] == "missing_current_feature"
+
+
+# -----------------------------------------------------------------------------
+# Test: Feature Impact and Correlation Summaries
+# -----------------------------------------------------------------------------
+
+class TestFeatureInterpretationOutputs:
+    """Tests for report-ready feature impact and correlation summaries."""
+
+    def test_feature_correlation_pairs_flag_high_correlation(self):
+        """Pairwise feature correlations should flag strongly related inputs."""
+        df = pd.DataFrame(
+            {
+                "a": [1.0, 2.0, 3.0, 4.0],
+                "b": [2.0, 4.0, 6.0, 8.0],
+                "c": [4.0, 1.0, 3.0, 2.0],
+            }
+        )
+
+        corr = summarize_feature_correlations(df, ["a", "b", "c"])
+        pairs = summarize_feature_correlation_pairs(
+            corr,
+            feature_space="demo",
+            high_correlation_threshold=0.8,
+        )
+        row = pairs[
+            (pairs["feature_1"] == "a") & (pairs["feature_2"] == "b")
+        ].iloc[0]
+
+        assert row["correlation"] == pytest.approx(1.0)
+        assert bool(row["high_correlation"])
+
+    def test_feature_correlation_pairs_handles_single_feature_space(self):
+        """Single-feature spaces should return an empty pair table."""
+        corr = pd.DataFrame([[1.0]], index=["a"], columns=["a"])
+
+        pairs = summarize_feature_correlation_pairs(
+            corr,
+            feature_space="demo",
+        )
+
+        assert pairs.empty
+        assert "high_correlation" in pairs.columns
+
+    def test_shap_importance_plot_returns_base64_png(self):
+        """SHAP importance plotting should produce embeddable image data."""
+        shap_importance = pd.DataFrame(
+            {
+                "feature": ["a", "b"],
+                "mean_abs_shap": [0.25, 0.10],
+            }
+        )
+
+        plot = plot_shap_feature_importance(shap_importance)
+
+        assert isinstance(plot, str)
+        assert len(plot) > 0
 
 
 # -----------------------------------------------------------------------------

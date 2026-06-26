@@ -47,6 +47,7 @@ from .training_utils import (
     predict_with_lr_pipeline,
     predict_with_dt_model,
     compare_predictions,
+    compare_feature_distribution_shift,
     plot_roc_curve,
     plot_confusion_matrix,
 )
@@ -159,8 +160,50 @@ def run_inference(
     skipped_youden_models: List[str] = []
 
     target_col = cfg["TARGET_COLUMN"]
+    model_configs = list_model_artifacts(models_dir, features_dir)
+    required_features = sorted(
+        {feature for meta in model_configs for feature in meta.get("features", [])}
+    )
+    distribution_shift_report = pd.DataFrame()
+    reference_profile_path = paths["results"] / "training_distribution_reference.csv"
+    shift_report_path = predictions_dir / "distribution_shift_report.csv"
+    if required_features and reference_profile_path.exists():
+        try:
+            reference_profile = pd.read_csv(reference_profile_path)
+            distribution_shift_report = compare_feature_distribution_shift(
+                reference_profile,
+                df,
+                required_features,
+            )
+            distribution_shift_report.to_csv(shift_report_path, index=False)
+            flagged = distribution_shift_report[
+                distribution_shift_report["flagged"].astype(bool)
+            ]
+            if not flagged.empty:
+                top_features = ", ".join(flagged["feature"].astype(str).head(5))
+                logging.warning(
+                    "Possible distribution shift detected in %d/%d checked features "
+                    "(examples: %s). See %s",
+                    len(flagged),
+                    len(distribution_shift_report),
+                    top_features,
+                    shift_report_path,
+                )
+            else:
+                logging.info(
+                    "No material distribution shift detected across %d checked features",
+                    len(distribution_shift_report),
+                )
+        except Exception as e:
+            logging.warning("Failed to compute distribution shift report: %s", e)
+    elif required_features:
+        logging.warning(
+            "No training distribution reference found at %s. Re-run training with "
+            "the current code to enable inference-time distribution shift warnings.",
+            reference_profile_path,
+        )
 
-    for meta in list_model_artifacts(models_dir, features_dir):
+    for meta in model_configs:
         model_key = meta["model_key"]
         feature_space = meta["feature_space"]
         weight = meta["weight"]
@@ -443,6 +486,9 @@ def run_inference(
         validation_results=validation_results if validate else None,
         plots=plots_dict,
         metrics=metrics_rows,
+        distribution_shift=(
+            distribution_shift_report if not distribution_shift_report.empty else None
+        ),
     )
     logging.info("Wrote inference report to %s", report_path)
 

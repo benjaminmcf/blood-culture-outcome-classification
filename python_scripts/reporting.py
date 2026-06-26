@@ -65,6 +65,10 @@ def generate_training_report(
     holdout_metrics: Optional[pd.DataFrame] = None,
     prevalence_sensitivity: Optional[pd.DataFrame] = None,
     prevalence_plots: Optional[Dict[str, str]] = None,
+    shap_importance: Optional[Dict[str, pd.DataFrame]] = None,
+    shap_plots: Optional[Dict[str, str]] = None,
+    feature_correlations: Optional[Dict[str, pd.DataFrame]] = None,
+    correlation_plots: Optional[Dict[str, str]] = None,
 ) -> None:
     """Generate an HTML report for the training run.
     
@@ -73,6 +77,10 @@ def generate_training_report(
     holdout_metrics: DataFrame of untouched hold-out metrics, if requested
     prevalence_sensitivity: DataFrame of prevalence-adjusted metrics
     prevalence_plots: Dict mapping model_name -> prevalence sensitivity plot
+    shap_importance: Dict mapping model_name -> final-model SHAP importance DataFrame
+    shap_plots: Dict mapping model_name -> SHAP importance plot
+    feature_correlations: Dict mapping feature_space -> feature-pair correlation DataFrame
+    correlation_plots: Dict mapping feature_space -> correlation heatmap
     """
     
     # Section 1: Dataset & Config
@@ -205,6 +213,103 @@ def generate_training_report(
                     prevalence_cols
                 ].to_html(index=False, classes="table", border=0)
 
+        if shap_importance:
+            table_html += """
+            <h2>SHAP Feature Impact</h2>
+            <p>SHAP values are computed on the final development-set model after feature selection and model fitting. The table ranks selected features by mean absolute SHAP value, so larger values indicate greater average contribution to that model's predicted positive-class probability.</p>
+            """
+            shap_cols = [
+                "feature",
+                "mean_abs_shap",
+                "mean_shap",
+                "std_abs_shap",
+                "n_shap_samples",
+                "shap_rank",
+            ]
+            for _, row in results_df.iterrows():
+                m_name = row["model"]
+                model_shap = shap_importance.get(m_name)
+                if model_shap is None or model_shap.empty:
+                    continue
+
+                table_html += f"<h3>Model: {html.escape(str(m_name))}</h3>"
+                shap_plot = (shap_plots or {}).get(m_name)
+                if shap_plot:
+                    table_html += (
+                        f"<div><img src='data:image/png;base64,{shap_plot}' "
+                        f"alt='SHAP feature importance {html.escape(str(m_name))}' "
+                        "style='max-width: 800px; border: 1px solid #ddd; padding: 5px;'></div>"
+                    )
+
+                display_shap = model_shap[
+                    [c for c in shap_cols if c in model_shap.columns]
+                ].head(20).copy()
+                numeric_cols_shap = display_shap.select_dtypes(
+                    include=["float", "int"]
+                ).columns
+                display_shap[numeric_cols_shap] = display_shap[
+                    numeric_cols_shap
+                ].round(4)
+                table_html += display_shap.to_html(
+                    index=False,
+                    classes="table",
+                    border=0,
+                )
+
+        if feature_correlations:
+            table_html += """
+            <h2>Feature Correlation Analysis</h2>
+            <p>Spearman correlations are computed across the candidate input features in each feature space using the development dataset. Pairs with absolute correlation of at least 0.80 are highlighted below; the full pairwise table and feature-space matrices are saved in the results directory.</p>
+            """
+            correlation_cols = [
+                "feature_1",
+                "feature_2",
+                "correlation",
+                "abs_correlation",
+                "high_correlation",
+            ]
+            for feature_space_name, correlations in feature_correlations.items():
+                table_html += f"<h3>Feature Space: {html.escape(str(feature_space_name))}</h3>"
+                correlation_plot = (correlation_plots or {}).get(feature_space_name)
+                if correlation_plot:
+                    table_html += (
+                        f"<div><img src='data:image/png;base64,{correlation_plot}' "
+                        f"alt='Feature correlation heatmap {html.escape(str(feature_space_name))}' "
+                        "style='max-width: 800px; border: 1px solid #ddd; padding: 5px;'></div>"
+                    )
+
+                if correlations is None or correlations.empty:
+                    table_html += "<p>No pairwise correlations available.</p>"
+                    continue
+
+                high_pairs = correlations[
+                    correlations["high_correlation"].astype(bool)
+                ].copy()
+                if high_pairs.empty:
+                    table_html += (
+                        "<p>No feature pairs had absolute Spearman correlation "
+                        "of at least 0.80.</p>"
+                    )
+                    continue
+
+                display_corr = high_pairs[
+                    [c for c in correlation_cols if c in high_pairs.columns]
+                ].head(20).copy()
+                numeric_cols_corr = display_corr.select_dtypes(
+                    include=["float", "int"]
+                ).columns
+                display_corr[numeric_cols_corr] = display_corr[
+                    numeric_cols_corr
+                ].round(3)
+                display_corr["high_correlation"] = display_corr[
+                    "high_correlation"
+                ].map({True: "Yes", False: "No"})
+                table_html += display_corr.to_html(
+                    index=False,
+                    classes="table",
+                    border=0,
+                )
+
         if feature_stability:
             table_html += """
             <h2>Feature Selection Stability</h2>
@@ -277,11 +382,13 @@ def generate_inference_report(
     validation_results: Optional[Dict[str, Any]] = None,
     plots: Dict[str, Dict[str, str]] = None,
     metrics: Optional[List[Dict[str, Any]]] = None,
+    distribution_shift: Optional[pd.DataFrame] = None,
 ) -> None:
     """Generate an HTML report for the inference run.
     
     plots: Dict mapping model_name -> {'roc': 'base64str', 'cm': 'base64str'}
     metrics: List of dicts from compute_performance_metrics (one per model)
+    distribution_shift: DataFrame comparing inference data with training profile
     """
     
     # Section 1: Input Summary
@@ -293,6 +400,48 @@ def generate_inference_report(
         <p><strong>Processed Rows:</strong> {input_info.get('n_processed', 0)}</p>
     </div>
     """
+
+    drift_html = ""
+    if distribution_shift is not None and not distribution_shift.empty:
+        drift_df = distribution_shift.copy()
+        flagged_mask = drift_df["flagged"].astype(bool)
+        n_checked = len(drift_df)
+        n_flagged = int(flagged_mask.sum())
+        badge_class = "bg-warning" if n_flagged else "bg-success"
+        status = "POTENTIAL SHIFT" if n_flagged else "PASS"
+        drift_html = f"""
+        <h2>Distribution Shift Check</h2>
+        <p><span class='status-badge {badge_class}'>{status}</span>
+        {n_flagged} of {n_checked} checked features were flagged when compared
+        with the training distribution reference. Full details are saved to
+        <code>predictions/distribution_shift_report.csv</code>.</p>
+        """
+        if n_flagged:
+            display_cols = [
+                "feature",
+                "shift_flags",
+                "standardized_mean_difference",
+                "missing_rate_diff",
+                "median_iqr_shift",
+                "outside_reference_range_rate",
+                "reference_median",
+                "current_median",
+                "reference_mean",
+                "current_mean",
+            ]
+            display_cols = [c for c in display_cols if c in drift_df.columns]
+            drift_display = (
+                drift_df.loc[flagged_mask, display_cols]
+                .copy()
+                .head(20)
+            )
+            numeric_cols = drift_display.select_dtypes(include=["float", "int"]).columns
+            drift_display[numeric_cols] = drift_display[numeric_cols].round(3)
+            drift_html += drift_display.to_html(
+                index=False,
+                classes="table",
+                border=0,
+            )
 
     # Section 2: Performance Metrics (if ground truth was available)
     metrics_html = ""
@@ -353,5 +502,8 @@ def generate_inference_report(
             )
         val_html += f"<ul>{''.join(val_items)}</ul>"
 
-    full_html = _render_html("Inference Report", stats_html + metrics_html + models_html + val_html)
+    full_html = _render_html(
+        "Inference Report",
+        stats_html + drift_html + metrics_html + models_html + val_html,
+    )
     output_path.write_text(full_html)

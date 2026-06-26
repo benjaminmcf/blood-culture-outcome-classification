@@ -175,6 +175,27 @@ During nested cross-validation, the pipeline records the selected feature set fr
 
 The fold-level selections are saved to `results/feature_selection_by_fold.csv`, and the summarized stability table is saved to `results/feature_selection_stability.csv` and embedded in the training HTML report.
 
+### Feature Impact and Correlation Analysis
+
+For each final model trained on the development dataset, the pipeline computes a
+SHAP feature-impact summary using the selected features for that model. Tree
+models use SHAP's tree explainer; other models use a sampled model-agnostic
+permutation explainer over the predicted positive-class probability. The output
+is summarized as mean absolute SHAP value, mean signed SHAP value, standard
+deviation of absolute SHAP values, number of sampled rows, and SHAP rank for
+each selected feature. These summaries are saved to
+`results/shap_feature_importance.csv` and displayed in the HTML training report.
+
+The pipeline also computes Spearman correlations among the candidate input
+features within each configured feature space using the development dataset.
+Full matrices are saved to
+`results/feature_correlation_matrix_<feature_space>.csv`, while
+`results/feature_correlation_pairs.csv` lists every pairwise correlation and
+flags pairs with absolute correlation of at least 0.80. The HTML report includes
+correlation heatmaps and the highest correlated feature pairs. These outputs are
+descriptive interpretation aids and are reported separately from model
+performance estimates.
+
 ### Final Model Training
 
 After nested CV provides unbiased performance estimates, a final model is trained on the development dataset. When no hold-out split is requested, the development dataset is the entire training dataset; when `--holdout` is used, the development dataset excludes the reserved hold-out rows.
@@ -219,6 +240,8 @@ An HTML report generated after training containing:
 - Cross-validation results table ranked by balanced accuracy
 - Hold-out performance table when `--holdout` is used
 - Prevalence sensitivity plots and tables across 5-15% assumed positivity
+- SHAP feature-impact plots and tables for each final trained model
+- Feature correlation heatmaps and high-correlation pair tables for each feature space
 - Feature selection stability tables and final selected feature subsets
 - ROC curves per model (aggregated from nested CV out-of-fold predictions)
 - Confusion matrices per model
@@ -227,9 +250,29 @@ An HTML report generated after training containing:
 
 An HTML report generated after inference containing:
 - Input dataset summary
+- Distribution shift warning table when incoming features differ materially from the training reference
 - Performance metrics table (balanced accuracy, recall, specificity, ROC-AUC, precision)
 - Per-model prediction counts and positive rates
 - ROC curves and confusion matrices (when ground truth available)
+
+### Distribution Shift Checks
+
+During training, the pipeline saves aggregate per-feature distribution
+statistics from the development set to `results/training_distribution_reference.csv`.
+The profile includes missingness rate, mean, standard deviation, median,
+quartiles, interquartile range, and observed minimum/maximum. When a hold-out
+set is requested, the hold-out rows are excluded from this reference profile.
+
+During inference, incoming data are compared with this saved profile for the
+features required by the discovered model artifacts. The resulting comparison is
+saved to `predictions/distribution_shift_report.csv` and summarized in the HTML
+inference report. Features are flagged when effect-size thresholds suggest a
+material shift: standardized mean difference ≥0.5, median shift ≥0.5 training
+IQRs, missingness difference ≥10 percentage points, ≥5% of incoming values
+outside the training min/max range, or a standard-deviation ratio outside
+0.5-2.0. These warnings are intended to highlight possible changes in patient
+mix, analyser configuration, laboratory process, or preprocessing, rather than
+to replace external validation.
 - Validation results (when `--validate` flag used)
 
 ## Artifact Export and Deployment
@@ -299,6 +342,7 @@ the same commands can be run as `uv run bcoc-train` and `uv run bcoc-infer`.
 | pandas | ≥2.3.3 | Data manipulation |
 | numpy | ≥2.3.4 | Numerical operations |
 | matplotlib | ≥3.10.7 | ROC curves and confusion matrix plots |
+| SHAP | ≥0.46.0 | Final-model feature impact summaries |
 
 ## Pipeline Configuration
 

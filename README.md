@@ -23,6 +23,7 @@ For a detailed technical description of the methodology, see [METHODS.md](METHOD
 - **HTML reports:** Auto-generated training and inference reports with ROC curves and confusion matrices
 - **Exportable artifacts:** LR coefficients and DT rules can be deployed without Python
 - **Validation mode:** Verify exported artifacts match original model predictions
+- **Feature interpretation outputs:** Final-model SHAP feature impact and input-feature correlation summaries
 
 ## Quick Start
 
@@ -190,19 +191,48 @@ When `--youdens` is used, models whose metadata does not contain a saved `youden
 5. Records the selected feature set from each outer fold and summarizes feature-selection stability
 6. Selects a per-model Youden threshold from the development-set cross-validation out-of-fold probabilities
 7. Computes a prevalence sensitivity analysis across 5-15% assumed positivity using nested-CV threshold performance
-8. Trains a final model on the development set with globally-selected development features
-9. If `--holdout` was used, evaluates the exported model once on the untouched hold-out set
-10. Saves artifacts and generates an HTML report
+8. Computes Spearman correlation summaries for each configured input feature space
+9. Saves aggregate training distribution statistics for inference-time drift checks
+10. Trains a final model on the development set with globally-selected development features
+11. Computes SHAP feature impact summaries for each final trained model
+12. If `--holdout` was used, evaluates the exported model once on the untouched hold-out set
+13. Saves artifacts and generates an HTML report
 
 **Outputs:**
 - `features/` — Selected feature lists (one per model configuration)
 - `models/` — Trained model objects (`.sav`) and metadata (`.json`, including imbalance strategy and saved Youden thresholds)
 - `results/results_cross_validation.csv` — Cross-validation metrics and saved Youden threshold summaries
 - `results/prevalence_sensitivity.csv` — PPV, NPV, F1, and expected false positives/false negatives per 100 cultures across 5-15% assumed positivity
+- `results/shap_feature_importance.csv` — Final-model SHAP feature impact ranked by mean absolute SHAP value
+- `results/feature_correlation_pairs.csv` — Pairwise input-feature correlations with high-correlation flags
+- `results/feature_correlation_matrix_<feature_space>.csv` — Full Spearman correlation matrix for each configured feature space
+- `results/training_distribution_reference.csv` — Aggregate per-feature training distribution profile used for inference-time shift checks
 - `results/holdout_metrics.csv` — Independent hold-out metrics when `--holdout` is used
 - `results/feature_selection_stability.csv` — Per-model feature stability summary across outer CV folds
 - `results/feature_selection_by_fold.csv` — Fold-level selected feature records
-- `results/training_report.html` — HTML report with metrics table, prevalence sensitivity plots, feature stability tables, ROC curves, and confusion matrices
+- `results/training_report.html` — HTML report with metrics table, prevalence sensitivity plots, SHAP feature impact plots, correlation heatmaps, feature stability tables, ROC curves, and confusion matrices
+
+#### Feature Impact and Correlation Outputs
+
+Training now writes two complementary interpretation outputs for the final
+development-set models:
+
+- SHAP feature impact: `results/shap_feature_importance.csv` ranks the selected
+  features used by each final model by `mean_abs_shap`. Larger values indicate
+  a larger average contribution to the model's predicted positive-class
+  probability on the sampled development rows. The HTML training report shows
+  the top SHAP-ranked features for each model.
+- Feature correlation analysis: `results/feature_correlation_pairs.csv` contains
+  pairwise Spearman correlations for candidate input features in each configured
+  feature space. Pairs with `abs_correlation >= 0.80` are flagged as highly
+  correlated. Full matrices are saved as
+  `results/feature_correlation_matrix_<feature_space>.csv`, and the HTML report
+  embeds heatmaps plus the highest correlated pairs.
+
+These outputs are descriptive model-interpretation summaries. They help show
+which selected features most influenced each final model and which input
+features carry overlapping information, but they should be interpreted alongside
+the nested-CV and hold-out performance estimates.
 
 #### Prevalence Sensitivity Calculations
 
@@ -233,6 +263,30 @@ This means the model would be expected to miss about 2 true positives and
 incorrectly flag about 9 true negatives per 100 cultures, assuming the same
 sensitivity and specificity.
 
+#### Distribution Shift Checks
+
+Training writes `results/training_distribution_reference.csv`, which contains
+aggregate statistics for each configured feature in the development data:
+missingness, mean, standard deviation, median, quartiles, and observed range.
+If `--holdout` is used, the reference is built from the development set only,
+not the reserved hold-out set.
+
+During inference, the pipeline compares the incoming data with this saved
+training profile and writes `predictions/distribution_shift_report.csv`. The
+HTML inference report shows a warning when one or more features are materially
+different from training. A feature can be flagged for:
+
+- `standardized_mean_difference`: mean shift of at least 0.5 pooled standard deviations
+- `median_iqr_shift`: median shift of at least 0.5 training IQRs
+- `missingness_shift`: missingness differs by at least 10 percentage points
+- `outside_reference_range`: at least 5% of incoming values fall outside the training min/max range
+- `variance_shift`: incoming standard deviation is at least 2x, or at most 0.5x, the training standard deviation
+
+These checks are practical effect-size warnings, not formal external validation.
+They help identify when inference data may come from a different patient mix,
+instrument configuration, laboratory process, or preprocessing pipeline than
+the data used for model development.
+
 ### Inference (`bcoc-infer`)
 
 1. Discovers all trained models in `models/` by reading metadata JSON files
@@ -240,10 +294,12 @@ sensitivity and specificity.
 3. For DT: extracts human-readable rules and applies them without the model object
 4. For RF/XG: uses saved model objects
 5. Applies either the fixed probability threshold or the saved training/CV Youden threshold
-6. If ground truth is available, computes performance metrics and generates plots
+6. Compares inference feature distributions against the saved training distribution reference and warns if material shifts are detected
+7. If ground truth is available, computes performance metrics and generates plots
 
 **Outputs:**
 - `predictions/preds_*.csv` — Per-model predictions (`model`, `imbalance_strategy`, `threshold_method`, `threshold`, `threshold_source`, `prob_pos`, `yhat`)
+- `predictions/distribution_shift_report.csv` — Per-feature comparison of inference data against the saved training distribution profile
 - `predictions/cm_*.csv` — Confusion matrices (when ground truth available)
 - `predictions/metrics_summary.csv` — Performance metrics per model
 - `predictions/inference_report.html` — HTML report with metrics and visualizations

@@ -34,10 +34,16 @@ from .training_utils import (
     plot_roc_curve,
     plot_confusion_matrix,
     plot_prevalence_sensitivity,
+    plot_feature_correlation_heatmap,
+    plot_shap_feature_importance,
     select_threshold_by_youdens_index,
     resolve_imbalance_strategy,
     summarize_prevalence_sensitivity,
+    summarize_feature_distributions,
+    summarize_feature_correlations,
+    summarize_feature_correlation_pairs,
     summarize_feature_selection_stability,
+    compute_shap_feature_importance,
 )
 from .reporting import generate_training_report
 
@@ -205,6 +211,14 @@ def main() -> None:
     y = df_dev[target_col]
 
     feature_spaces = get_feature_spaces(config)
+    reference_features = sorted(
+        {feature for cols in feature_spaces.values() for feature in cols}
+    )
+    reference_profile = summarize_feature_distributions(df_dev, reference_features)
+    reference_profile_path = paths["results"] / "training_distribution_reference.csv"
+    reference_profile.to_csv(reference_profile_path, index=False)
+    logging.info("Wrote training distribution reference to %s", reference_profile_path)
+
     model_keys = resolve_models(args.models)
     feature_selection_methods = resolve_fs_methods(args.fs)
     imbalance_strategy = args.imbalance_strategy
@@ -225,9 +239,30 @@ def main() -> None:
     holdout_rows = []
     prevalence_sensitivity_rows = []
     prevalence_plots_dict = {}
+    shap_importance_rows = []
+    shap_importance_tables = {}
+    shap_plots_dict = {}
+    correlation_pair_rows = []
+    correlation_tables = {}
+    correlation_plots_dict = {}
 
     for feature_space_name, cols in feature_spaces.items():
         X_all = df_dev[cols].copy()
+        corr_matrix = summarize_feature_correlations(X_all, list(cols))
+        correlation_tables[feature_space_name] = summarize_feature_correlation_pairs(
+            corr_matrix,
+            feature_space=feature_space_name,
+        )
+        correlation_pair_rows.extend(
+            correlation_tables[feature_space_name].to_dict("records")
+        )
+        corr_path = paths["results"] / f"feature_correlation_matrix_{feature_space_name}.csv"
+        corr_matrix.to_csv(corr_path)
+        correlation_plots_dict[feature_space_name] = plot_feature_correlation_heatmap(
+            corr_matrix,
+            title=f"Feature Correlation: {feature_space_name}",
+        )
+        logging.info("Wrote feature correlation matrix to %s", corr_path)
 
         for model_key in model_keys:
             for weight in weights_list:
@@ -393,6 +428,31 @@ def main() -> None:
                     # Train on development data with selected features
                     final_model = clone(estimator)
                     final_model.fit(X_final_sel.values, y.values)
+                    try:
+                        shap_df = compute_shap_feature_importance(
+                            final_model,
+                            X_final_sel,
+                            model_key=model_key,
+                            random_state=RANDOM_STATE,
+                        )
+                        if not shap_df.empty:
+                            shap_df.insert(0, "model", model_artifact_name)
+                            shap_df.insert(1, "feature_space", feature_space_name)
+                            shap_df.insert(2, "selection_method", fsm)
+                            shap_df.insert(3, "imbalance_strategy", imbalance_strategy)
+                            shap_df.insert(4, "class_weight", float(weight))
+                            shap_importance_rows.extend(shap_df.to_dict("records"))
+                            shap_importance_tables[model_artifact_name] = shap_df
+                            shap_plots_dict[model_artifact_name] = plot_shap_feature_importance(
+                                shap_df,
+                                title=f"SHAP Feature Importance: {model_artifact_name}",
+                            )
+                    except Exception as e:
+                        logging.warning(
+                            "Failed to compute SHAP feature importance for %s: %s",
+                            model_artifact_name,
+                            e,
+                        )
 
                     if df_holdout is not None:
                         X_holdout = df_holdout[final_selected_features].copy()
@@ -474,6 +534,14 @@ def main() -> None:
     pd.DataFrame(fold_feature_rows).to_csv(fold_features_path, index=False)
     logging.info("Wrote fold-level selected features to %s", fold_features_path)
 
+    shap_path = paths["results"] / "shap_feature_importance.csv"
+    pd.DataFrame(shap_importance_rows).to_csv(shap_path, index=False)
+    logging.info("Wrote SHAP feature importance to %s", shap_path)
+
+    correlation_pairs_path = paths["results"] / "feature_correlation_pairs.csv"
+    pd.DataFrame(correlation_pair_rows).to_csv(correlation_pairs_path, index=False)
+    logging.info("Wrote feature correlation pairs to %s", correlation_pairs_path)
+
     holdout_df = pd.DataFrame(holdout_rows)
     holdout_path = paths["results"] / "holdout_metrics.csv"
     holdout_df.to_csv(holdout_path, index=False)
@@ -507,6 +575,10 @@ def main() -> None:
         holdout_metrics=holdout_df if not holdout_df.empty else None,
         prevalence_sensitivity=prevalence_df if not prevalence_df.empty else None,
         prevalence_plots=prevalence_plots_dict,
+        shap_importance=shap_importance_tables,
+        shap_plots=shap_plots_dict,
+        feature_correlations=correlation_tables,
+        correlation_plots=correlation_plots_dict,
     )
     logging.info("Wrote training report to %s", report_path)
 
